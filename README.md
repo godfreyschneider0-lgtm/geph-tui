@@ -1,11 +1,10 @@
-# gephgui-tui (formerly gephgui-wry)
+# gephgui-tui (formerly [gephgui-wry](https://github.com/geph-official/gephgui-wry))
 
 This is the terminal user interface (TUI) client for Geph 5. It was previously a Webview-based GUI (`gephgui-wry`), but has been rewritten as a lightweight, cross-platform terminal app.
 
 ## Requirements
 
 - Rust toolchain (latest stable)
-- `geph5-client` binary in your PATH or in the same directory, which handles the actual VPN core logic.
 
 ## Compilation
 
@@ -13,7 +12,7 @@ Since this is now a pure Rust TUI application, building it is very straightforwa
 
 ```shell
 git clone ...
-cd gephgui-wry
+cd gephgui-tui
 cargo build --release
 ```
 
