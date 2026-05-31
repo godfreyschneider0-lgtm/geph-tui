@@ -1,34 +1,56 @@
-#![windows_subsystem = "windows"]
-
-use fakefs::FakeFs;
-
-use mtbus::mt_next;
-
-use rpc::ipc_handle;
-// #[cfg(feature = "tray")]
-// use tao::system_tray::{SystemTray, SystemTrayBuilder};
-use tao::{
-    dpi::LogicalSize,
-    event::{Event, WindowEvent},
-    event_loop::{ControlFlow, EventLoop, EventLoopBuilder},
-    window::{Icon, Window, WindowBuilder},
+use crossterm::{
+    event::{self, Event, KeyCode},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use daemon::{daemon_running, start_daemon, stop_daemon, DaemonArgs, ExitConstraint};
+use geph5_broker_protocol::{ExitDescriptor, NetStatus};
+use geph5_misc_rpc::client_control::{ConnInfo, RegistrationProgress};
+use nanorpc::{JrpcId, JrpcRequest};
+use ratatui::{
+    backend::{Backend, CrosstermBackend},
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Tabs},
+    Terminal,
+};
+use std::{io, time::Duration};
+use tui_textarea::TextArea;
 
-#[cfg(target_os = "macos")]
-use muda::{Menu, PredefinedMenuItem, Submenu};
-
-mod autoupdate;
 mod daemon;
-mod fakefs;
+mod autoupdate;
 
-mod mtbus;
-mod pac;
-mod rpc;
+use std::sync::{Arc, Mutex};
+use serde::{Serialize, Deserialize};
 
-use wry::{WebContext, WebView, WebViewBuilder};
+#[derive(Clone)]
+struct LogWriter {
+    logs: Arc<Mutex<Vec<String>>>,
+}
 
-const WINDOW_WIDTH: i32 = 400;
-const WINDOW_HEIGHT: i32 = 720;
+impl io::Write for LogWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let s = String::from_utf8_lossy(buf);
+        let mut logs = self.logs.lock().unwrap();
+        logs.extend(s.lines().map(|l| l.to_string()));
+        if logs.len() > 1000 {
+            let overflow = logs.len() - 1000;
+            logs.drain(0..overflow);
+        }
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogWriter {
+    type Writer = Self;
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
 
 fn main() -> anyhow::Result<()> {
     unsafe {
@@ -37,7 +59,7 @@ fn main() -> anyhow::Result<()> {
         std::env::remove_var("HTTP_PROXY");
         std::env::remove_var("HTTPS_PROXY");
     }
-    // see whether this is a subprocess that simulates "geph5-client --config ..."
+    
     let args = std::env::args().collect::<Vec<_>>();
     if let Some("--config") = args.get(1).map(|s| s.as_str()) {
         let val: serde_json::Value = serde_yaml::from_slice(&std::fs::read(&args[2])?)?;
@@ -49,152 +71,585 @@ fn main() -> anyhow::Result<()> {
 
     // DO NOT run the autoupdate logic on flatpak, but otherwise it's good
     if std::env::var("FLATPAK_ID").is_err() {
-        smolscale::block_on(autoupdate::prompt_cached_update_if_available())?;
         smolscale::spawn(autoupdate::download_update_loop()).detach();
     }
 
-    // Start a simple HTTP server in a separate thread
-    std::thread::spawn(|| {
-        let server = tiny_http::Server::http("127.0.0.1:5678").unwrap();
-        for request in server.incoming_requests() {
-            let url = request.url().trim_start_matches('/');
-            let url = if url.is_empty() { "index.html" } else { url };
+    let debug_logs = Arc::new(Mutex::new(Vec::new()));
+    let writer = LogWriter { logs: debug_logs.clone() };
+    
+    // Ensure terminal output is completely clean
+    let _ = tracing_subscriber::fmt()
+        .with_writer(writer)
+        .with_ansi(false) // Disable ANSI color codes which might mess up TUI if any leak
+        .try_init();
 
-            if let Some(resp) = FakeFs::get(url) {
-                let mime_type = mime_guess::from_path(url)
-                    .first_or_octet_stream()
-                    .to_string();
+    smolscale::block_on(async {
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen)?;
+        let backend = CrosstermBackend::new(stdout);
+        let mut terminal = Terminal::new(backend)?;
+        
+        // Clear screen explicitly before running
+        terminal.clear()?;
 
-                let response = tiny_http::Response::from_data(resp.data).with_header(
-                    tiny_http::Header::from_bytes(&b"Content-Type"[..], mime_type.as_bytes())
-                        .unwrap(),
-                );
+        let res = run_app(&mut terminal, debug_logs).await;
 
-                request.respond(response).ok();
-            } else {
-                let response = tiny_http::Response::from_string("Not found").with_status_code(404);
-                request.respond(response).ok();
-            }
+        disable_raw_mode()?;
+        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+        terminal.show_cursor()?;
+
+        if let Err(err) = res {
+            println!("{:?}", err)
         }
-    });
 
-    let event_loop: EventLoop<Box<dyn FnOnce(&WebView, &Window) + Send + 'static>> =
-        EventLoopBuilder::with_user_event().build();
-    let evt_proxy = event_loop.create_proxy();
-    std::thread::spawn(move || {
-        loop {
-            let evt = mt_next();
-            evt_proxy.send_event(Box::new(evt)).ok().unwrap();
-        }
-    });
+        anyhow::Ok(())
+    })?;
 
-    let window = WindowBuilder::new()
-        .with_resizable(true)
-        .with_inner_size(LogicalSize {
-            width: WINDOW_WIDTH,
-            height: WINDOW_HEIGHT,
-        })
-        .with_title("Geph")
-        .with_window_icon({
-            let logo_png = png::Decoder::new(include_bytes!("logo-naked-32px.png").as_ref());
-            let mut logo_png = logo_png.read_info()?;
-            let mut icon_buf = vec![0; logo_png.output_buffer_size()];
-            logo_png.next_frame(&mut icon_buf)?;
-
-            let logo_icon =
-                Icon::from_rgba(icon_buf, logo_png.info().width, logo_png.info().height)?;
-            Some(logo_icon)
-        })
-        .build(&event_loop)
-        .unwrap();
-
-    #[cfg(target_os = "macos")]
-    {
-        let menu = edit_menu();
-        menu?.init_for_nsapp();
-    }
-
-    let mut initjs = include_str!("init.js").to_string();
-    // Disable VPN configuration UI on macOS and Flatpak Linux builds.
-    if cfg!(target_os = "macos")
-        || (cfg!(target_os = "linux") && std::env::var("FLATPAK_ID").is_ok())
-    {
-        initjs.push_str("\nwindow.NATIVE_GATE.supports_vpn_conf = false;");
-    }
-
-    let mut wctx = WebContext::new(dirs::config_dir());
-    let builder = WebViewBuilder::with_web_context(&mut wctx)
-        .with_url("http://127.0.0.1:5678")
-        .with_initialization_script(&initjs)
-        .with_ipc_handler(|req| {
-            let req = req.into_body();
-            ipc_handle(req).unwrap();
-        });
-
-    #[cfg(any(
-        target_os = "windows",
-        target_os = "macos",
-        target_os = "ios",
-        target_os = "android"
-    ))]
-    let webview = builder.build(&window)?;
-
-    #[cfg(not(any(
-        target_os = "windows",
-        target_os = "macos",
-        target_os = "ios",
-        target_os = "android"
-    )))]
-    let webview = {
-        use tao::platform::unix::WindowExtUnix;
-        use wry::WebViewBuilderExtUnix;
-        let vbox = window.default_vbox().unwrap();
-        builder.build_gtk(vbox)?
-    };
-    event_loop.run(move |event, _, control_flow| {
-        *control_flow = ControlFlow::Wait;
-        match event {
-            Event::UserEvent(e) => e(&webview, &window),
-            Event::WindowEvent {
-                event: WindowEvent::CloseRequested,
-                ..
-            } => {
-                println!("The close button was pressed; stopping");
-                *control_flow = ControlFlow::Exit
-            }
-            Event::MainEventsCleared => {
-                // Application update code.
-
-                // Queue a RedrawRequested event.
-                //
-                // You only need to call this if you've determined that you need to redraw, in
-                // applications which do not always need to. Applications that redraw continuously
-                // can just render here instead.
-                // window.request_redraw();
-            }
-            Event::RedrawRequested(_) => {
-                // Redraw the application.
-                //
-                // It's preferable for applications that do not render continuously to render in
-                // this event rather than in MainEventsCleared, since rendering in here allows
-                // the program to gracefully handle redraws requested by the OS.
-            }
-            _ => (),
-        }
-    });
+    Ok(())
 }
 
-#[cfg(target_os = "macos")]
-fn edit_menu() -> anyhow::Result<Menu> {
-    let edit = Submenu::with_items(
-        "Edit",
-        true,
-        &[
-            &PredefinedMenuItem::copy(None),
-            &PredefinedMenuItem::paste(None),
-        ],
-    )?;
-    let menu = Menu::new();
-    menu.append(&edit)?;
-    Ok(menu)
+#[derive(PartialEq)]
+enum TabIdx {
+    Status,
+    Nodes,
+    Config,
+    Debug,
+}
+
+#[derive(PartialEq)]
+enum Focus {
+    None,
+    Secret,
+    SocksPort,
+    HttpPort,
+}
+
+#[derive(Serialize, Deserialize, Default)]
+struct TuiPrefs {
+    secret: String,
+    socks_port: String,
+    http_port: String,
+    global_vpn: bool,
+    listen_all: bool,
+    enable_debug_log: bool,
+}
+
+impl TuiPrefs {
+    fn load() -> Self {
+        let path = dirs::config_dir().unwrap_or_else(|| std::env::temp_dir()).join("geph5_tui_prefs.json");
+        if let Ok(b) = std::fs::read(&path) {
+            if let Ok(p) = serde_json::from_slice(&b) {
+                return p;
+            }
+        }
+        Self {
+            socks_port: "9909".into(),
+            http_port: "9910".into(),
+            ..Default::default()
+        }
+    }
+
+    fn save(&self) {
+        let path = dirs::config_dir().unwrap_or_else(|| std::env::temp_dir()).join("geph5_tui_prefs.json");
+        let _ = std::fs::write(&path, serde_json::to_string(self).unwrap_or_default());
+    }
+}
+
+struct AppState<'a> {
+    tab: TabIdx,
+    is_running: bool,
+    conn_info: ConnInfo,
+    
+    // Config
+    secret_textarea: TextArea<'a>,
+    socks_textarea: TextArea<'a>,
+    http_textarea: TextArea<'a>,
+    listen_all: bool,
+    global_vpn: bool,
+    
+    // Nodes
+    exits: Vec<(String, ExitDescriptor)>,
+    node_list_state: ListState,
+    selected_exit_name: Option<String>,
+    
+    focus: Focus,
+    registration_status: String,
+    registration_idx: Option<usize>,
+    
+    debug_logs: Arc<Mutex<Vec<String>>>,
+    debug_scroll: u16,
+    debug_auto_scroll: bool,
+    enable_debug_log: bool,
+
+    update_info: Option<(String, std::path::PathBuf)>,
+}
+
+impl<'a> AppState<'a> {
+    fn new(debug_logs: Arc<Mutex<Vec<String>>>) -> Self {
+        let prefs = TuiPrefs::load();
+        
+        let mut secret = TextArea::default();
+        secret.insert_str(&prefs.secret);
+        
+        let mut socks = TextArea::default();
+        socks.insert_str(&prefs.socks_port);
+        
+        let mut http = TextArea::default();
+        http.insert_str(&prefs.http_port);
+        
+        Self {
+            tab: TabIdx::Status,
+            is_running: false,
+            conn_info: ConnInfo::Disconnected,
+            
+            secret_textarea: secret,
+            socks_textarea: socks,
+            http_textarea: http,
+            listen_all: prefs.listen_all,
+            global_vpn: prefs.global_vpn,
+            
+            exits: vec![],
+            node_list_state: ListState::default(),
+            selected_exit_name: None,
+            
+            focus: Focus::None,
+            registration_status: String::new(),
+            registration_idx: None,
+            
+            debug_logs,
+            debug_scroll: 0,
+            debug_auto_scroll: true,
+            enable_debug_log: prefs.enable_debug_log,
+
+            update_info: None,
+        }
+    }
+    
+    fn sync_prefs(&self) {
+        let prefs = TuiPrefs {
+            secret: self.secret_textarea.lines().join(""),
+            socks_port: self.socks_textarea.lines().join(""),
+            http_port: self.http_textarea.lines().join(""),
+            global_vpn: self.global_vpn,
+            listen_all: self.listen_all,
+            enable_debug_log: self.enable_debug_log,
+        };
+        prefs.save();
+    }
+}
+
+async fn run_app<B: Backend>(terminal: &mut Terminal<B>, debug_logs: Arc<Mutex<Vec<String>>>) -> anyhow::Result<()> {
+    let mut state = AppState::new(debug_logs);
+    state.secret_textarea.set_block(Block::default().borders(Borders::ALL).title("Login Secret"));
+    state.socks_textarea.set_block(Block::default().borders(Borders::ALL).title("SOCKS5 Port"));
+    state.http_textarea.set_block(Block::default().borders(Borders::ALL).title("HTTP Proxy Port"));
+
+    loop {
+        state.update_info = autoupdate::get_cached_update();
+
+        // Fetch status
+        state.is_running = daemon_running().await;
+        if state.is_running {
+            let jrpc = JrpcRequest {
+                jsonrpc: "2.0".into(),
+                method: "conn_info".into(),
+                params: vec![],
+                id: JrpcId::Number(1),
+            };
+            if let Ok(resp) = daemon::daemon_rpc(jrpc).await {
+                if let Some(res) = resp.result {
+                    if let Ok(info) = serde_json::from_value(res) {
+                        state.conn_info = info;
+                    }
+                }
+            }
+        } else {
+            state.conn_info = ConnInfo::Disconnected;
+        }
+
+        // Fetch nodes
+        let mut user_level = geph5_broker_protocol::AccountLevel::Free;
+        if state.is_running {
+            let cred = geph5_broker_protocol::Credential::Secret(state.secret_textarea.lines().join(""));
+            let cred_val = serde_json::to_value(&cred).unwrap_or(serde_json::Value::Null);
+            let ui_jrpc = JrpcRequest {
+                jsonrpc: "2.0".into(),
+                method: "broker_rpc".into(),
+                params: vec![
+                    serde_json::Value::String("get_user_info_by_cred".into()),
+                    serde_json::Value::Array(vec![cred_val]),
+                ],
+                id: JrpcId::Number(99),
+            };
+            if let Ok(resp) = daemon::daemon_rpc(ui_jrpc).await {
+                if let Some(res) = resp.result {
+                    if let Ok(Some(ui)) = serde_json::from_value::<Option<geph5_broker_protocol::UserInfo>>(res) {
+                        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+                        if ui.plus_expires_unix.unwrap_or(0) > now {
+                            user_level = geph5_broker_protocol::AccountLevel::Plus;
+                        }
+                    }
+                }
+            }
+        }
+
+        let ns_jrpc = JrpcRequest {
+            jsonrpc: "2.0".into(),
+            method: "net_status".into(),
+            params: vec![],
+            id: JrpcId::Number(3),
+        };
+        if let Ok(resp) = daemon::daemon_rpc(ns_jrpc).await {
+            if let Some(res) = resp.result {
+                if let Ok(ns) = serde_json::from_value::<NetStatus>(res) {
+                    state.exits = ns.exits.into_iter().filter_map(|(name, (_, desc, meta))| {
+                        if meta.allowed_levels.contains(&user_level) {
+                            Some((name, desc))
+                        } else {
+                            None
+                        }
+                    }).collect();
+                    state.exits.sort_by_key(|(_, desc)| (desc.country.alpha2().to_string(), desc.city.clone()));
+                }
+            }
+        }
+
+        // Poll registration
+        if let Some(idx) = state.registration_idx {
+            let poll_jrpc = JrpcRequest {
+                jsonrpc: "2.0".into(),
+                method: "poll_registration".into(),
+                params: vec![serde_json::json!(idx)],
+                id: JrpcId::Number(4),
+            };
+            if let Ok(resp) = daemon::daemon_rpc(poll_jrpc).await {
+                if let Some(res) = resp.result {
+                    if let Ok(prog) = serde_json::from_value::<RegistrationProgress>(res) {
+                        if let Some(sec) = prog.secret {
+                            state.secret_textarea = TextArea::default();
+                            state.secret_textarea.insert_str(&sec);
+                            state.secret_textarea.set_block(Block::default().borders(Borders::ALL).title("Login Secret"));
+                            state.registration_status = "Registration complete!".into();
+                            state.registration_idx = None;
+                            state.sync_prefs();
+                        } else {
+                            state.registration_status = format!("Registering... {:.1}%", prog.progress * 100.0);
+                        }
+                    }
+                } else if let Some(err) = resp.error {
+                    state.registration_status = format!("Registration failed: {}", err.message);
+                    state.registration_idx = None;
+                }
+            }
+        }
+
+        terminal.draw(|f| draw_ui(f, &mut state))?;
+
+        if event::poll(Duration::from_millis(250))? {
+            let event = event::read()?;
+            
+            if state.focus != Focus::None {
+                if let Event::Key(key) = event {
+                    match key.code {
+                        KeyCode::Esc | KeyCode::Enter => {
+                            state.focus = Focus::None;
+                            state.secret_textarea.set_style(Style::default());
+                            state.socks_textarea.set_style(Style::default());
+                            state.http_textarea.set_style(Style::default());
+                        }
+                        _ => {
+                            match state.focus {
+                                Focus::Secret => { state.secret_textarea.input(key); }
+                                Focus::SocksPort => { state.socks_textarea.input(key); }
+                                Focus::HttpPort => { state.http_textarea.input(key); }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+
+            if let Event::Key(key) = event {
+                match key.code {
+                    KeyCode::Char('q') => {
+                        let _ = stop_daemon().await;
+                        return Ok(());
+                    }
+                    KeyCode::Char('1') => state.tab = TabIdx::Status,
+                    KeyCode::Char('2') => state.tab = TabIdx::Nodes,
+                    KeyCode::Char('3') => state.tab = TabIdx::Config,
+                    KeyCode::Char('4') => state.tab = TabIdx::Debug,
+                    
+                    KeyCode::Char('s') => {
+                        if !state.is_running {
+                            let exit = if let Some(name) = &state.selected_exit_name {
+                                if let Some((_, desc)) = state.exits.iter().find(|(n, _)| n == name) {
+                                    ExitConstraint::Manual { city: desc.city.clone(), country: desc.country.alpha2().to_string() }
+                                } else {
+                                    ExitConstraint::Auto
+                                }
+                            } else {
+                                ExitConstraint::Auto
+                            };
+
+                            let args = DaemonArgs {
+                                secret: state.secret_textarea.lines().join(""),
+                                metadata: serde_json::Value::Null,
+                                prc_whitelist: false,
+                                exit,
+                                global_vpn: state.global_vpn,
+                                listen_all: state.listen_all,
+                                proxy_autoconf: false,
+                                allow_direct: true,
+                                socks5_port: state.socks_textarea.lines().join("").parse().unwrap_or(9909),
+                                http_proxy_port: state.http_textarea.lines().join("").parse().unwrap_or(9910),
+                                enable_debug_log: state.enable_debug_log,
+                            };
+                            let _ = start_daemon(args).await;
+                        }
+                    }
+                    KeyCode::Char('x') => {
+                        if state.is_running {
+                            let _ = stop_daemon().await;
+                        }
+                    }
+                    KeyCode::Char('e') if state.tab == TabIdx::Config => {
+                        state.focus = Focus::Secret;
+                        state.secret_textarea.set_style(Style::default().fg(Color::Yellow));
+                    }
+                    KeyCode::Char('p') if state.tab == TabIdx::Config => {
+                        state.focus = Focus::SocksPort;
+                        state.socks_textarea.set_style(Style::default().fg(Color::Yellow));
+                    }
+                    KeyCode::Char('h') if state.tab == TabIdx::Config => {
+                        state.focus = Focus::HttpPort;
+                        state.http_textarea.set_style(Style::default().fg(Color::Yellow));
+                    }
+                    KeyCode::Char('r') if state.tab == TabIdx::Config => {
+                        // Start registration
+                        let reg_jrpc = JrpcRequest {
+                            jsonrpc: "2.0".into(),
+                            method: "start_registration".into(),
+                            params: vec![],
+                            id: JrpcId::Number(5),
+                        };
+                        if let Ok(resp) = daemon::daemon_rpc(reg_jrpc).await {
+                            if let Some(res) = resp.result {
+                                if let Ok(idx) = serde_json::from_value::<usize>(res) {
+                                    state.registration_idx = Some(idx);
+                                    state.registration_status = "Registration started...".into();
+                                }
+                            } else if let Some(err) = resp.error {
+                                state.registration_status = format!("Failed to start: {}", err.message);
+                            }
+                        }
+                    }
+                    KeyCode::Char('v') if state.tab == TabIdx::Config => {
+                        state.global_vpn = !state.global_vpn;
+                    }
+                    KeyCode::Char('l') if state.tab == TabIdx::Config => {
+                        state.listen_all = !state.listen_all;
+                    }
+                    KeyCode::Down if state.tab == TabIdx::Nodes => {
+                        let i = match state.node_list_state.selected() {
+                            Some(i) => if i >= state.exits.len().saturating_sub(1) { 0 } else { i + 1 },
+                            None => 0,
+                        };
+                        state.node_list_state.select(Some(i));
+                    }
+                    KeyCode::Up if state.tab == TabIdx::Nodes => {
+                        let i = match state.node_list_state.selected() {
+                            Some(i) => if i == 0 { state.exits.len().saturating_sub(1) } else { i - 1 },
+                            None => 0,
+                        };
+                        state.node_list_state.select(Some(i));
+                    }
+                    KeyCode::Enter if state.tab == TabIdx::Nodes => {
+                        if let Some(i) = state.node_list_state.selected() {
+                            if i < state.exits.len() {
+                                state.selected_exit_name = Some(state.exits[i].0.clone());
+                            }
+                        }
+                    }
+                    KeyCode::Char('a') if state.tab == TabIdx::Nodes => {
+                        state.selected_exit_name = None; // Auto
+                    }
+                    KeyCode::Up if state.tab == TabIdx::Debug => {
+                        state.debug_scroll = state.debug_scroll.saturating_sub(1);
+                        state.debug_auto_scroll = false;
+                    }
+                    KeyCode::Down if state.tab == TabIdx::Debug => {
+                        let max_scroll = state.debug_logs.lock().unwrap().len().saturating_sub(1) as u16;
+                        state.debug_scroll = std::cmp::min(state.debug_scroll + 1, max_scroll);
+                        if state.debug_scroll >= max_scroll {
+                            state.debug_auto_scroll = true;
+                        }
+                    }
+                    KeyCode::Char('d') if state.tab == TabIdx::Debug => {
+                        state.enable_debug_log = !state.enable_debug_log;
+                    }
+                    _ => {}
+                }
+            }
+            state.sync_prefs();
+        }
+    }
+}
+
+fn draw_ui(f: &mut ratatui::Frame, state: &mut AppState) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints([Constraint::Length(3), Constraint::Min(10), Constraint::Length(3)].as_ref())
+        .split(f.area());
+
+    let titles = vec!["1: Status", "2: Nodes", "3: Config", "4: Debug"]
+        .into_iter()
+        .map(|t| Line::from(t))
+        .collect::<Vec<_>>();
+    let tabs = Tabs::new(titles)
+        .select(match state.tab {
+            TabIdx::Status => 0,
+            TabIdx::Nodes => 1,
+            TabIdx::Config => 2,
+            TabIdx::Debug => 3,
+        })
+        .block(Block::default().title("Tabs").borders(Borders::ALL))
+        .highlight_style(Style::default().add_modifier(Modifier::BOLD).fg(Color::Yellow));
+    f.render_widget(tabs, chunks[0]);
+
+    match state.tab {
+        TabIdx::Status => draw_status(f, state, chunks[1]),
+        TabIdx::Nodes => draw_nodes(f, state, chunks[1]),
+        TabIdx::Config => draw_config(f, state, chunks[1]),
+        TabIdx::Debug => draw_debug(f, state, chunks[1]),
+    }
+
+    let controls = Paragraph::new(
+        "Press 's' Start | 'x' Stop | 'q' Quit | '1'-'4' Tabs"
+    )
+    .block(Block::default().title("Global Controls").borders(Borders::ALL));
+    f.render_widget(controls, chunks[2]);
+}
+
+fn draw_status(f: &mut ratatui::Frame, state: &mut AppState, area: Rect) {
+    let status_text = match &state.conn_info {
+        ConnInfo::Disconnected => "Disconnected",
+        ConnInfo::Connecting => "Connecting...",
+        ConnInfo::Connected { .. } => "Connected",
+    };
+    let status_style = match &state.conn_info {
+        ConnInfo::Disconnected => Style::default().fg(Color::Red),
+        ConnInfo::Connecting => Style::default().fg(Color::Yellow),
+        ConnInfo::Connected { .. } => Style::default().fg(Color::Green),
+    };
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::raw("Daemon: "),
+            Span::styled(if state.is_running { "Running" } else { "Stopped" }, if state.is_running { Style::default().fg(Color::Green) } else { Style::default().fg(Color::Red) }),
+            Span::raw(" | Network: "),
+            Span::styled(status_text, status_style),
+            Span::raw(" | Exit: "),
+            Span::styled(state.selected_exit_name.as_deref().unwrap_or("Auto"), Style::default().fg(Color::Cyan)),
+        ])
+    ];
+
+    if let Some((version, path)) = &state.update_info {
+        lines.push(Line::from(""));
+        
+        let is_chinese = sys_locale::get_locale().unwrap_or_default().contains("zh");
+        if is_chinese {
+            lines.push(Line::from(Span::styled(format!("提示: 迷雾通新版本 ({}) 的更新包已下载至:", version), Style::default().fg(Color::Yellow))));
+            lines.push(Line::from(Span::styled(path.display().to_string(), Style::default().fg(Color::Yellow))));
+            lines.push(Line::from(Span::styled("请您前往该目录手动处理此更新。", Style::default().fg(Color::Yellow))));
+        } else {
+            lines.push(Line::from(Span::styled(format!("Notice: Update package for Geph ({}) downloaded to:", version), Style::default().fg(Color::Yellow))));
+            lines.push(Line::from(Span::styled(path.display().to_string(), Style::default().fg(Color::Yellow))));
+            lines.push(Line::from(Span::styled("Please go to this directory and handle the update manually.", Style::default().fg(Color::Yellow))));
+        }
+    }
+
+    let p = Paragraph::new(lines)
+    .block(Block::default().title("Status").borders(Borders::ALL));
+    f.render_widget(p, area);
+}
+
+fn draw_nodes(f: &mut ratatui::Frame, state: &mut AppState, area: Rect) {
+    let mut items = vec![];
+    for (name, desc) in &state.exits {
+        let is_selected = state.selected_exit_name.as_ref() == Some(name);
+        let prefix = if is_selected { "[*]" } else { "[ ]" };
+        let content = format!("{} {} {} - Load: {:.2}", prefix, desc.country.alpha2(), desc.city, desc.load);
+        items.push(ListItem::new(content));
+    }
+    
+    let list = List::new(items)
+        .block(Block::default().title("Nodes (Up/Down to select, Enter to apply, 'a' for Auto)").borders(Borders::ALL))
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .highlight_symbol(">> ");
+    f.render_stateful_widget(list, area, &mut state.node_list_state);
+}
+
+fn draw_config(f: &mut ratatui::Frame, state: &mut AppState, area: Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Min(0)
+        ].as_ref())
+        .split(area);
+
+    f.render_widget(&state.secret_textarea, chunks[0]);
+    f.render_widget(&state.socks_textarea, chunks[1]);
+    f.render_widget(&state.http_textarea, chunks[2]);
+
+    let vpn_text = format!("VPN Mode: {} (Press 'v' to toggle)", if state.global_vpn { "ON" } else { "OFF" });
+    let vpn_p = Paragraph::new(vpn_text).block(Block::default().borders(Borders::ALL));
+    f.render_widget(vpn_p, chunks[3]);
+
+    let listen_text = format!("Listen All Interfaces: {} (Press 'l' to toggle)", if state.listen_all { "ON" } else { "OFF" });
+    let listen_p = Paragraph::new(listen_text).block(Block::default().borders(Borders::ALL));
+    f.render_widget(listen_p, chunks[4]);
+
+    let hints = Paragraph::new(format!("Press 'e' for Secret, 'p' for SOCKS5, 'h' for HTTP port editing.\nEnter/Esc to finish. Press 'r' to register new secret.\n{}", state.registration_status));
+    f.render_widget(hints, chunks[5]);
+}
+
+fn draw_debug(f: &mut ratatui::Frame, state: &mut AppState, area: Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(5)].as_ref())
+        .split(area);
+
+    let toggle_text = format!(
+        "Debug Logging to 'gephgui.log': {} (Press 'd' to toggle)\nNote: Changes take effect on next Start ('s').",
+        if state.enable_debug_log { "ON" } else { "OFF" }
+    );
+    let toggle_p = Paragraph::new(toggle_text).block(Block::default().borders(Borders::ALL));
+    f.render_widget(toggle_p, chunks[0]);
+
+    let logs = state.debug_logs.lock().unwrap();
+    let logs_text: Vec<Line> = logs
+        .iter()
+        .map(|l| Line::from(l.as_str()))
+        .collect();
+    
+    let max_scroll = logs.len().saturating_sub(chunks[1].height.saturating_sub(2) as usize) as u16;
+    if state.debug_auto_scroll {
+        state.debug_scroll = max_scroll;
+    } else if state.debug_scroll > max_scroll {
+        state.debug_scroll = max_scroll;
+    }
+    
+    let p = Paragraph::new(logs_text)
+        .block(Block::default().title("GUI Debug Logs (Up/Down to scroll)").borders(Borders::ALL))
+        .scroll((state.debug_scroll, 0));
+    f.render_widget(p, chunks[1]);
 }

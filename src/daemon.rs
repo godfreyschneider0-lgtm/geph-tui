@@ -16,16 +16,35 @@ use smol::future::FutureExt as SmolFutureExt;
 use smol::net::TcpStream;
 use smol_timeout2::TimeoutExt;
 use std::process::Stdio;
-use tap::Tap;
 use tempfile::NamedTempFile;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
-use crate::{
-    pac::{configure_proxy, deconfigure_proxy},
-    rpc::DaemonArgs,
-};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DaemonArgs {
+    pub secret: String,
+    pub metadata: serde_json::Value,
+    pub prc_whitelist: bool,
+    pub exit: ExitConstraint,
+    pub global_vpn: bool,
+    pub listen_all: bool,
+    pub proxy_autoconf: bool,
+    pub allow_direct: bool,
+    pub socks5_port: u16,
+    pub http_proxy_port: u16,
+    pub enable_debug_log: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "lowercase")]
+pub enum ExitConstraint {
+    Auto,
+    #[serde(untagged)]
+    Manual { city: String, country: String },
+}
 
 const DEFAULT_CONFIG_YAML: &str = include_str!("default-config.yaml");
 
@@ -51,9 +70,9 @@ pub async fn restart_daemon(args: DaemonArgs) -> anyhow::Result<()> {
 }
 
 pub async fn start_daemon(args: DaemonArgs) -> anyhow::Result<()> {
-    if args.proxy_autoconf {
-        configure_proxy()?;
-    }
+    // if args.proxy_autoconf {
+    //     configure_proxy()?;
+    // }
     let crash_rx = start_daemon_inner(args)?;
     let start_fut = async {
         wait_daemon_start()
@@ -78,7 +97,7 @@ pub async fn start_daemon(args: DaemonArgs) -> anyhow::Result<()> {
 }
 
 fn start_daemon_inner(args: DaemonArgs) -> anyhow::Result<OneshotReceiver<String>> {
-    let cfg = running_cfg(args);
+    let cfg = running_cfg(args.clone());
 
     let mut tfile = NamedTempFile::with_suffix(".yaml")?;
     let val = serde_json::to_value(&cfg)?;
@@ -101,9 +120,24 @@ fn start_daemon_inner(args: DaemonArgs) -> anyhow::Result<OneshotReceiver<String
 
             let mut cmd = std::process::Command::new("pkexec");
             cmd.arg(exec_path).arg("--config").arg(path);
+            cmd.stdout(Stdio::null()); // Mute stdout
+            if args.enable_debug_log {
+                if let Ok(file) = std::fs::OpenOptions::new().create(true).append(true).open("gephgui.log") {
+                    cmd.stderr(Stdio::from(file));
+                } else {
+                    cmd.stderr(Stdio::piped());
+                }
+            } else {
+                cmd.stderr(Stdio::null());
+            }
+            let mut child = cmd.spawn()?;
             std::thread::spawn(move || {
-                let _ = cmd.status();
-                let _ = sender.send(String::new());
+                let mut buf = String::new();
+                if let Some(mut stderr) = child.stderr.take() {
+                    stderr.read_to_string(&mut buf).ok();
+                }
+                let _ = child.wait();
+                let _ = sender.send(buf);
             });
         }
         #[cfg(target_os = "windows")]
@@ -121,7 +155,16 @@ fn start_daemon_inner(args: DaemonArgs) -> anyhow::Result<OneshotReceiver<String
         cmd.arg("--config").arg(path);
         #[cfg(windows)]
         cmd.creation_flags(0x08000000);
-        cmd.stderr(Stdio::piped());
+        cmd.stdout(Stdio::null()); // Mute stdout
+        if args.enable_debug_log {
+            if let Ok(file) = std::fs::OpenOptions::new().create(true).append(true).open("gephgui.log") {
+                cmd.stderr(Stdio::from(file));
+            } else {
+                cmd.stderr(Stdio::piped());
+            }
+        } else {
+            cmd.stderr(Stdio::null());
+        }
         let mut child = cmd.spawn()?;
         std::thread::spawn(move || {
             let mut buf = String::new();
@@ -153,7 +196,7 @@ async fn check_daemon() -> anyhow::Result<()> {
 }
 
 pub async fn stop_daemon() -> anyhow::Result<()> {
-    let _ = deconfigure_proxy();
+    // let _ = deconfigure_proxy();
     stop_daemon_inner().await
 }
 
@@ -223,8 +266,14 @@ fn default_config() -> geph5_client::Config {
     static DEFAULT_CONFIG: LazyLock<geph5_client::Config> = LazyLock::new(|| {
         let value: serde_json::Value = serde_yaml::from_str(DEFAULT_CONFIG_YAML)
             .expect("default-config.yaml must deserialize into serde_json::Value");
-        serde_json::from_value(value)
-            .expect("default-config.yaml must deserialize into geph5_client::Config")
+        let mut cfg: geph5_client::Config = serde_json::from_value(value)
+            .expect("default-config.yaml must deserialize into geph5_client::Config");
+            
+        let cache_dir = dirs::cache_dir().unwrap_or_else(|| std::env::temp_dir());
+        let geph_cache = cache_dir.join("geph5_tui");
+        let _ = std::fs::create_dir_all(&geph_cache);
+        cfg.cache = Some(geph_cache.join("database.db"));
+        cfg
     });
 
     DEFAULT_CONFIG.clone()
@@ -238,16 +287,17 @@ fn running_cfg(args: DaemonArgs) -> geph5_client::Config {
     cfg.vpn = args.global_vpn;
     cfg.passthrough_china = args.prc_whitelist;
     cfg.credentials = geph5_broker_protocol::Credential::Secret(args.secret);
-    if args.listen_all {
-        cfg.socks5_listen =
-            Some(SOCKS5_ADDR.tap_mut(|sa| sa.set_ip(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)))));
-        cfg.http_proxy_listen =
-            Some(HTTP_ADDR.tap_mut(|sa| sa.set_ip(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)))));
-    }
+    let listen_ip = if args.listen_all {
+        IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0))
+    } else {
+        IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
+    };
+    cfg.socks5_listen = Some(SocketAddr::new(listen_ip, args.socks5_port));
+    cfg.http_proxy_listen = Some(SocketAddr::new(listen_ip, args.http_proxy_port));
 
     cfg.exit_constraint = match args.exit {
-        crate::rpc::ExitConstraint::Auto => geph5_client::ExitConstraint::Auto,
-        crate::rpc::ExitConstraint::Manual { city, country } => {
+        ExitConstraint::Auto => geph5_client::ExitConstraint::Auto,
+        ExitConstraint::Manual { city, country } => {
             geph5_client::ExitConstraint::CountryCity(
                 CountryCode::for_alpha2(&country).unwrap(),
                 city,

@@ -4,7 +4,6 @@ use std::{
     fs,
     io::ErrorKind,
     path::{Path, PathBuf},
-    process::exit,
     time::Duration,
 };
 
@@ -14,11 +13,10 @@ use rand::Rng;
 
 use geph5_misc_rpc::client_control::ControlClient;
 use nanorpc::{JrpcRequest, JrpcResponse, RpcTransport};
-use rfd::MessageDialog;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
-use crate::daemon::{daemon_rpc, stop_daemon};
+use crate::daemon::daemon_rpc;
 
 const UPDATE_MEAN_INTERVAL_HOURS: f64 = 6.0;
 const RETRY_DELAY_SECONDS: u64 = 600;
@@ -48,33 +46,17 @@ pub async fn download_update_loop() {
     }
 }
 
-/// On startup, prompt the user if we already downloaded an update previously.
-pub async fn prompt_cached_update_if_available() -> anyhow::Result<()> {
-    let Some(metadata) = load_metadata()? else {
-        tracing::debug!("no cached update metadata; skipping prompt");
-        return Ok(());
-    };
-    tracing::debug!(version = %metadata.version, path = %metadata.download_path.display(), "cached update metadata found");
+/// Checks if there's a cached update available and returns its version and path.
+pub fn get_cached_update() -> Option<(String, PathBuf)> {
+    let metadata = load_metadata().ok()??;
+    let current = current_version().ok()?;
+    let metadata_version = Version::parse(&metadata.version).ok()?;
 
-    let current_version = current_version()?;
-    let metadata_version = match Version::parse(&metadata.version) {
-        Ok(ver) => ver,
-        Err(err) => {
-            tracing::debug!(err = debug(err), "invalid cached update metadata");
-            let _ = clear_metadata();
-            return Ok(());
-        }
-    };
-
-    if metadata_version <= current_version {
-        return Ok(());
+    if metadata_version > current && metadata.download_path.exists() {
+        Some((metadata.version, metadata.download_path))
+    } else {
+        None
     }
-
-    if !metadata.download_path.exists() {
-        return Ok(());
-    }
-
-    run_update(&metadata.version, &metadata.download_path).await
 }
 
 #[derive(Debug)]
@@ -146,76 +128,7 @@ async fn ensure_update_cached() -> anyhow::Result<CacheResult> {
     })
 }
 
-async fn run_update(version: &str, path: &Path) -> anyhow::Result<()> {
-    let version = version.to_string();
-    let path = path.to_path_buf();
 
-    // Use smol::unblock to perform blocking dialog operations
-    let should_exit = smol::unblock(move || {
-        // Check if system language is Chinese
-        let is_chinese = sys_locale::get_locale().unwrap_or_default().contains("zh");
-
-        // Prepare dialog text based on language
-        let title = if is_chinese {
-            "迷雾通更新可用"
-        } else {
-            "Geph Update Available"
-        };
-
-        let description = if is_chinese {
-            format!("迷雾通新版本可用 ({version}). 安装此更新将停止当前迷雾通程序并运行安装程序。现在安装？")
-        } else {
-            format!("A new version of Geph is available ({version}). Installing this update will stop the current Geph program and run the installer. Install now?")
-        };
-
-        // Show a dialog to inform the user about the update
-        let result = MessageDialog::new()
-            .set_title(title)
-            .set_description(&description)
-            .set_buttons(rfd::MessageButtons::YesNo)
-            .show();
-
-        if result == rfd::MessageDialogResult::Yes {
-            // User clicked Yes, run the installer
-
-            // Run the installer
-            #[cfg(target_os = "windows")]
-            {
-                // On Windows, just execute the installer
-                std::process::Command::new(&path).arg("/SILENT").spawn()?;
-            }
-
-            #[cfg(target_os = "macos")]
-            {
-                // On macOS, open the .dmg or .pkg file
-                std::process::Command::new("open").arg(&path).spawn()?;
-            }
-
-            #[cfg(target_os = "linux")]
-            {
-                let _ = &path;
-            }
-
-            // Return true to indicate we should exit
-            anyhow::Ok(true)
-        } else {
-            // User clicked No, don't exit
-            Ok(false)
-        }
-    })
-    .await?;
-
-    if should_exit {
-        // Stop the daemon
-        stop_daemon().await?;
-
-        // Exit the application
-        tracing::info!("Exiting for update installation");
-        exit(0);
-    }
-
-    Ok(())
-}
 
 fn cache_root() -> anyhow::Result<PathBuf> {
     let path = dirs::cache_dir()
@@ -301,6 +214,9 @@ const TRACK: &str = "windows-stable";
 
 #[cfg(target_os = "macos")]
 const TRACK: &str = "macos-stable";
+
+#[cfg(target_os = "android")]
+const TRACK: &str = "linux-stable";
 
 struct DaemonRpcTransport;
 
