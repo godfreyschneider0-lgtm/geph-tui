@@ -29,8 +29,8 @@ cargo run --release
 >If you run the android version , you cannot use its `tun0` without root , but `socks5` is fine.
 
 ```sh
-/data/data/com.termux/files/home/geph-tui/target/release # file gephgui-wry                                                                                                                       
-gephgui-wry: ELF shared object, 64-bit LSB arm64, dynamic (/system/bin/linker64), for Android 24, built by NDK r29 (14206865), stripped
+/data/data/com.termux/files/home/geph-tui/target/release # file gephgui-tui                                                                                                                       
+gephgui-tui: ELF shared object, 64-bit LSB arm64, dynamic (/system/bin/linker64), for Android 24, built by NDK r29 (14206865), stripped
 ```
 
 **Keybindings in the app:**
