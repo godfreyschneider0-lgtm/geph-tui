@@ -126,6 +126,7 @@ enum Focus {
 }
 
 #[derive(Serialize, Deserialize, Default)]
+#[serde(default)]
 struct TuiPrefs {
     secret: String,
     socks_port: String,
@@ -133,6 +134,7 @@ struct TuiPrefs {
     global_vpn: bool,
     listen_all: bool,
     enable_debug_log: bool,
+    allow_direct: bool,
 }
 
 impl TuiPrefs {
@@ -167,6 +169,7 @@ struct AppState<'a> {
     http_textarea: TextArea<'a>,
     listen_all: bool,
     global_vpn: bool,
+    allow_direct: bool,
     
     // Nodes
     exits: Vec<(String, ExitDescriptor)>,
@@ -208,6 +211,7 @@ impl<'a> AppState<'a> {
             http_textarea: http,
             listen_all: prefs.listen_all,
             global_vpn: prefs.global_vpn,
+            allow_direct: prefs.allow_direct,
             
             exits: vec![],
             node_list_state: ListState::default(),
@@ -234,6 +238,7 @@ impl<'a> AppState<'a> {
             global_vpn: self.global_vpn,
             listen_all: self.listen_all,
             enable_debug_log: self.enable_debug_log,
+            allow_direct: self.allow_direct,
         };
         prefs.save();
     }
@@ -402,7 +407,7 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, debug_logs: Arc<Mutex<V
                                 global_vpn: state.global_vpn,
                                 listen_all: state.listen_all,
                                 proxy_autoconf: false,
-                                allow_direct: true,
+                                allow_direct: state.allow_direct,
                                 socks5_port: state.socks_textarea.lines().join("").parse().unwrap_or(9909),
                                 http_proxy_port: state.http_textarea.lines().join("").parse().unwrap_or(9910),
                                 enable_debug_log: state.enable_debug_log,
@@ -451,6 +456,9 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, debug_logs: Arc<Mutex<V
                     }
                     KeyCode::Char('l') if state.tab == TabIdx::Config => {
                         state.listen_all = !state.listen_all;
+                    }
+                    KeyCode::Char('b') if state.tab == TabIdx::Config => {
+                        state.allow_direct = !state.allow_direct;
                     }
                     KeyCode::Down if state.tab == TabIdx::Nodes => {
                         let i = match state.node_list_state.selected() {
@@ -602,6 +610,7 @@ fn draw_config(f: &mut ratatui::Frame, state: &mut AppState, area: Rect) {
             Constraint::Length(3),
             Constraint::Length(3),
             Constraint::Length(3),
+            Constraint::Length(3),
             Constraint::Min(0)
         ].as_ref())
         .split(area);
@@ -618,8 +627,12 @@ fn draw_config(f: &mut ratatui::Frame, state: &mut AppState, area: Rect) {
     let listen_p = Paragraph::new(listen_text).block(Block::default().borders(Borders::ALL));
     f.render_widget(listen_p, chunks[4]);
 
+    let direct_text = format!("Connection Mode: {} (Press 'b' to toggle)", if state.allow_direct { "Direct" } else { "Bridged" });
+    let direct_p = Paragraph::new(direct_text).block(Block::default().borders(Borders::ALL));
+    f.render_widget(direct_p, chunks[5]);
+
     let hints = Paragraph::new(format!("Press 'e' for Secret, 'p' for SOCKS5, 'h' for HTTP port editing.\nEnter/Esc to finish. Press 'r' to register new secret.\n{}", state.registration_status));
-    f.render_widget(hints, chunks[5]);
+    f.render_widget(hints, chunks[6]);
 }
 
 fn draw_debug(f: &mut ratatui::Frame, state: &mut AppState, area: Rect) {
