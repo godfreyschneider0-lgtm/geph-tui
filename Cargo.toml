@@ -43,11 +43,11 @@ rand = "0.8.6"
 nanorpc = "0.1.13"
 async-trait = "0.1.89"
 thiserror = "2.0.18"
-geph5-client = { version = "0.2.102", features = ["windivert", "aws_lambda"] }
-geph5-broker-protocol = "0.2.102"
+geph5-client = { version = "0.2", features = ["windivert", "aws_lambda"] }
+geph5-broker-protocol = "0.2"
 futures-util = { version = "0.3.32", features = ["io"] }
 isocountry = "0.3.2"
-geph5-misc-rpc = "0.2.102"
+geph5-misc-rpc = "0.2"
 derive_more = "=2.0.1"
 tui-textarea = "0.7.0"
 hmac-sha256 = "1.1.14"
