@@ -1,18 +1,31 @@
 [package]
 name = "gephgui-tui"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 description = "TUI client for Geph"
 repository = "https://github.com/godfreyschneider0-lgtm/gephgui-tui"
 license = "MPL-2.0"
 
-[workspace]
-
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[workspace]
+members = [
+    ".",
+    "geph5/libraries/*",
+    "geph5/binaries/*",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.2.102"
+repository = "https://github.com/geph-official/geph5"
+license = "ISC"
+edition = "2024"
+
 [patch.crates-io]
-#geph5-client = { path = "../geph5/binaries/geph5-client" }
-#geph5-broker-protocol = { path = "../geph5/libraries/geph5-broker-protocol" }
+geph5-client = { path = "geph5/binaries/geph5-client" }
+geph5-broker-protocol = { path = "geph5/libraries/geph5-broker-protocol" }
+geph5-misc-rpc = { path = "geph5/libraries/geph5-misc-rpc" }
 
 [dependencies]
 tracing = "0.1.44"
@@ -43,11 +56,11 @@ rand = "0.8.6"
 nanorpc = "0.1.13"
 async-trait = "0.1.89"
 thiserror = "2.0.18"
-geph5-client = { version = "0.2", features = ["windivert", "aws_lambda"] }
-geph5-broker-protocol = "0.2"
+geph5-client = { version = "*", features = ["windivert", "aws_lambda"] }
+geph5-broker-protocol = "*"
 futures-util = { version = "0.3.32", features = ["io"] }
 isocountry = "0.3.2"
-geph5-misc-rpc = "0.2"
+geph5-misc-rpc = "*"
 derive_more = "=2.0.1"
 tui-textarea = "0.7.0"
 hmac-sha256 = "1.1.14"
