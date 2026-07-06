@@ -42,6 +42,7 @@ pub struct DaemonArgs {
 #[serde(rename_all = "lowercase")]
 pub enum ExitConstraint {
     Auto,
+    Country(String),
     #[serde(untagged)]
     Manual { city: String, country: String },
 }
@@ -279,7 +280,7 @@ fn default_config() -> geph5_client::Config {
     DEFAULT_CONFIG.clone()
 }
 
-fn running_cfg(args: DaemonArgs) -> geph5_client::Config {
+pub fn running_cfg(args: DaemonArgs) -> geph5_client::Config {
     // Start with the template config:
     let mut cfg = default_config();
 
@@ -297,6 +298,9 @@ fn running_cfg(args: DaemonArgs) -> geph5_client::Config {
 
     cfg.exit_constraint = match args.exit {
         ExitConstraint::Auto => geph5_client::ExitConstraint::Auto,
+        ExitConstraint::Country(country) => {
+            geph5_client::ExitConstraint::Country(CountryCode::for_alpha2(&country).unwrap())
+        }
         ExitConstraint::Manual { city, country } => {
             geph5_client::ExitConstraint::CountryCity(
                 CountryCode::for_alpha2(&country).unwrap(),

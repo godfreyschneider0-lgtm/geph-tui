@@ -3,9 +3,10 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use daemon::{daemon_running, start_daemon, stop_daemon, DaemonArgs, ExitConstraint};
-use geph5_broker_protocol::{ExitDescriptor, NetStatus};
+use daemon::{daemon_running, start_daemon, stop_daemon, DaemonArgs, ExitConstraint, running_cfg};
+use geph5_broker_protocol::NetStatus;
 use geph5_misc_rpc::client_control::{ConnInfo, RegistrationProgress};
+use isocountry::CountryCode;
 use nanorpc::{JrpcId, JrpcRequest};
 use ratatui::{
     backend::{Backend, CrosstermBackend},
@@ -64,6 +65,69 @@ fn main() -> anyhow::Result<()> {
     if let Some("--config") = args.get(1).map(|s| s.as_str()) {
         let val: serde_json::Value = serde_yaml::from_slice(&std::fs::read(&args[2])?)?;
         let cfg: geph5_client::Config = serde_json::from_value(val)?;
+        let client = geph5_client::Client::start(cfg);
+        smol::future::block_on(client.wait_until_dead())?;
+        return Ok(());
+    }
+
+    if let Some("--daemon") = args.get(1).map(|s| s.as_str()) {
+        let _ = tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .try_init();
+
+        let prefs = TuiPrefs::load();
+
+        if prefs.secret.is_empty() {
+            eprintln!("error: no account configured. Run the TUI once to set your Account ID, then use --daemon.");
+            return Err(anyhow::anyhow!("secret not configured"));
+        }
+
+        let socks5_port: u16 = prefs.socks_port.parse().unwrap_or(9909);
+        let http_proxy_port: u16 = prefs.http_port.parse().unwrap_or(9910);
+
+        let args = DaemonArgs {
+            secret: prefs.secret.clone(),
+            metadata: serde_json::Value::Null,
+            prc_whitelist: false,
+            exit: match &prefs.selected_country {
+                Some(country) => ExitConstraint::Country(country.clone()),
+                None => ExitConstraint::Auto,
+            },
+            global_vpn: prefs.global_vpn,
+            listen_all: prefs.listen_all,
+            proxy_autoconf: false,
+            allow_direct: prefs.allow_direct,
+            socks5_port,
+            http_proxy_port,
+            enable_debug_log: prefs.enable_debug_log,
+        };
+
+        let listen_ip = if prefs.listen_all { "0.0.0.0" } else { "127.0.0.1" };
+        let connection = if prefs.allow_direct { "Direct" } else { "Bridged" };
+        let vpn_mode = if prefs.global_vpn { "ON" } else { "OFF" };
+        let listen_all_str = if prefs.listen_all { "ON" } else { "OFF" };
+        let exit_display = match &prefs.selected_country {
+            Some(cc) => match CountryCode::for_alpha2(cc) {
+                Ok(country) => format!("{} ({})", country.name(), country.alpha2()),
+                Err(_) => cc.clone(),
+            },
+            None => "Auto".to_string(),
+        };
+
+        println!("gephgui-tui daemon (headless mode)");
+        println!("==================================");
+        println!("Account ID:    {}", prefs.secret);
+        println!("Connection:    {}", connection);
+        println!("VPN Mode:      {}", vpn_mode);
+        println!("Listen all:    {}", listen_all_str);
+        println!("SOCKS5:        {}:{}", listen_ip, socks5_port);
+        println!("HTTP Proxy:    {}:{}", listen_ip, http_proxy_port);
+        println!("Exit Node:     {}", exit_display);
+        println!("==================================");
+        println!();
+        println!("Starting daemon... Press Ctrl+C to stop.");
+
+        let cfg = running_cfg(args);
         let client = geph5_client::Client::start(cfg);
         smol::future::block_on(client.wait_until_dead())?;
         return Ok(());
@@ -135,6 +199,7 @@ struct TuiPrefs {
     listen_all: bool,
     enable_debug_log: bool,
     allow_direct: bool,
+    selected_country: Option<String>,
 }
 
 impl TuiPrefs {
@@ -172,9 +237,9 @@ struct AppState<'a> {
     allow_direct: bool,
     
     // Nodes
-    exits: Vec<(String, ExitDescriptor)>,
+    countries: Vec<CountryCode>,
     node_list_state: ListState,
-    selected_exit_name: Option<String>,
+    selected_country: Option<String>,
     
     focus: Focus,
     registration_status: String,
@@ -213,9 +278,9 @@ impl<'a> AppState<'a> {
             global_vpn: prefs.global_vpn,
             allow_direct: prefs.allow_direct,
             
-            exits: vec![],
+            countries: vec![],
             node_list_state: ListState::default(),
-            selected_exit_name: None,
+            selected_country: prefs.selected_country.clone(),
             
             focus: Focus::None,
             registration_status: String::new(),
@@ -239,6 +304,7 @@ impl<'a> AppState<'a> {
             listen_all: self.listen_all,
             enable_debug_log: self.enable_debug_log,
             allow_direct: self.allow_direct,
+            selected_country: self.selected_country.clone(),
         };
         prefs.save();
     }
@@ -308,14 +374,19 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, debug_logs: Arc<Mutex<V
         if let Ok(resp) = daemon::daemon_rpc(ns_jrpc).await {
             if let Some(res) = resp.result {
                 if let Ok(ns) = serde_json::from_value::<NetStatus>(res) {
-                    state.exits = ns.exits.into_iter().filter_map(|(name, (_, desc, meta))| {
-                        if meta.allowed_levels.contains(&user_level) {
-                            Some((name, desc))
+                    let mut seen = std::collections::HashSet::new();
+                    state.countries = ns.exits.into_iter().filter_map(|(_, (_, desc, meta))| {
+                        if !meta.allowed_levels.contains(&user_level) {
+                            return None;
+                        }
+                        let cc = desc.country;
+                        if seen.insert(cc.alpha2().to_string()) {
+                            Some(cc)
                         } else {
                             None
                         }
                     }).collect();
-                    state.exits.sort_by_key(|(_, desc)| (desc.country.alpha2().to_string(), desc.city.clone()));
+                    state.countries.sort_by_key(|c| c.alpha2().to_string());
                 }
             }
         }
@@ -389,14 +460,9 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, debug_logs: Arc<Mutex<V
                     
                     KeyCode::Char('s') => {
                         if !state.is_running {
-                            let exit = if let Some(name) = &state.selected_exit_name {
-                                if let Some((_, desc)) = state.exits.iter().find(|(n, _)| n == name) {
-                                    ExitConstraint::Manual { city: desc.city.clone(), country: desc.country.alpha2().to_string() }
-                                } else {
-                                    ExitConstraint::Auto
-                                }
-                            } else {
-                                ExitConstraint::Auto
+                            let exit = match &state.selected_country {
+                                Some(country) => ExitConstraint::Country(country.clone()),
+                                None => ExitConstraint::Auto,
                             };
 
                             let args = DaemonArgs {
@@ -462,27 +528,27 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, debug_logs: Arc<Mutex<V
                     }
                     KeyCode::Down if state.tab == TabIdx::Nodes => {
                         let i = match state.node_list_state.selected() {
-                            Some(i) => if i >= state.exits.len().saturating_sub(1) { 0 } else { i + 1 },
+                            Some(i) => if i >= state.countries.len().saturating_sub(1) { 0 } else { i + 1 },
                             None => 0,
                         };
                         state.node_list_state.select(Some(i));
                     }
                     KeyCode::Up if state.tab == TabIdx::Nodes => {
                         let i = match state.node_list_state.selected() {
-                            Some(i) => if i == 0 { state.exits.len().saturating_sub(1) } else { i - 1 },
+                            Some(i) => if i == 0 { state.countries.len().saturating_sub(1) } else { i - 1 },
                             None => 0,
                         };
                         state.node_list_state.select(Some(i));
                     }
                     KeyCode::Enter if state.tab == TabIdx::Nodes => {
                         if let Some(i) = state.node_list_state.selected() {
-                            if i < state.exits.len() {
-                                state.selected_exit_name = Some(state.exits[i].0.clone());
+                            if i < state.countries.len() {
+                                state.selected_country = Some(state.countries[i].alpha2().to_string());
                             }
                         }
                     }
                     KeyCode::Char('a') if state.tab == TabIdx::Nodes => {
-                        state.selected_exit_name = None; // Auto
+                        state.selected_country = None; // Auto
                     }
                     KeyCode::Up if state.tab == TabIdx::Debug => {
                         state.debug_scroll = state.debug_scroll.saturating_sub(1);
@@ -561,7 +627,7 @@ fn draw_status(f: &mut ratatui::Frame, state: &mut AppState, area: Rect) {
             Span::raw(" | Network: "),
             Span::styled(status_text, status_style),
             Span::raw(" | Exit: "),
-            Span::styled(state.selected_exit_name.as_deref().unwrap_or("Auto"), Style::default().fg(Color::Cyan)),
+            Span::styled(state.selected_country.as_deref().unwrap_or("Auto"), Style::default().fg(Color::Cyan)),
         ])
     ];
 
@@ -587,15 +653,15 @@ fn draw_status(f: &mut ratatui::Frame, state: &mut AppState, area: Rect) {
 
 fn draw_nodes(f: &mut ratatui::Frame, state: &mut AppState, area: Rect) {
     let mut items = vec![];
-    for (name, desc) in &state.exits {
-        let is_selected = state.selected_exit_name.as_ref() == Some(name);
+    for cc in &state.countries {
+        let is_selected = state.selected_country.as_deref() == Some(cc.alpha2());
         let prefix = if is_selected { "[*]" } else { "[ ]" };
-        let content = format!("{} {} {} - Load: {:.2}", prefix, desc.country.alpha2(), desc.city, desc.load);
+        let content = format!("{} {} - {}", prefix, cc.alpha2(), cc.name());
         items.push(ListItem::new(content));
     }
-    
+
     let list = List::new(items)
-        .block(Block::default().title("Nodes (Up/Down to select, Enter to apply, 'a' for Auto)").borders(Borders::ALL))
+        .block(Block::default().title("Regions (Up/Down to select, Enter to apply, 'a' for Auto)").borders(Borders::ALL))
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
         .highlight_symbol(">> ");
     f.render_stateful_widget(list, area, &mut state.node_list_state);
