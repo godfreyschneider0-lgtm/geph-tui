@@ -62,6 +62,32 @@ fn main() -> anyhow::Result<()> {
     }
     
     let args = std::env::args().collect::<Vec<_>>();
+    match args.get(1).map(|s| s.as_str()) {
+        Some("-h") | Some("--help") => {
+            println!("gephgui-tui {} — Geph5 client (TUI + headless daemon)\n", env!("CARGO_PKG_VERSION"));
+            println!("USAGE:");
+            println!("    gephgui-tui [MODE] [ARGS]\n");
+            println!("MODES:");
+            println!("    (none)            Interactive TUI (default). Configure account, region,");
+            println!("                      ports; press 's' to connect, 'q' to quit.");
+            println!("    --daemon          Headless: connect using saved config, no UI. Logs go to");
+            println!("                      stderr. Set up your account in the TUI first.");
+            println!("    --config <FILE>   Run the core client with a YAML config file.");
+            println!("    -h, --help        Show this help.\n");
+            println!("HEADLESS USAGE:");
+            println!("    nohup gephgui-tui --daemon > geph.log 2>&1 &");
+            println!("    # stop with: kill <pid>   (or launch the TUI and press 'x')\n");
+            println!("TUI KEYS:");
+            println!("    1-4   tabs (Status / Regions / Config / Debug)");
+            println!("    s/x   start / stop connection");
+            println!("    e     edit Account ID      p  edit SOCKS5 port      h  edit HTTP port");
+            println!("    v     toggle VPN mode      l  toggle listen-all      b  toggle direct/bridged");
+            println!("    r     register a new account");
+            println!("    q     quit");
+            return Ok(());
+        }
+        _ => {}
+    }
     if let Some("--config") = args.get(1).map(|s| s.as_str()) {
         let val: serde_json::Value = serde_yaml::from_slice(&std::fs::read(&args[2])?)?;
         let cfg: geph5_client::Config = serde_json::from_value(val)?;
