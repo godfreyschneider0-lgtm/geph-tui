@@ -226,6 +226,7 @@ struct TuiPrefs {
     enable_debug_log: bool,
     allow_direct: bool,
     selected_country: Option<String>,
+    last_known_level: Option<String>,
 }
 
 impl TuiPrefs {
@@ -270,6 +271,7 @@ struct AppState<'a> {
     level_notice: Option<String>,
     needs_cache_clear: bool,
     last_detected_level: geph5_broker_protocol::AccountLevel,
+    plus_expires_days: Option<f64>,
     
     focus: Focus,
     registration_status: String,
@@ -314,7 +316,11 @@ impl<'a> AppState<'a> {
             
             level_notice: None,
             needs_cache_clear: false,
-            last_detected_level: geph5_broker_protocol::AccountLevel::Free,
+            last_detected_level: match prefs.last_known_level.as_deref() {
+                Some("Plus") => geph5_broker_protocol::AccountLevel::Plus,
+                _ => geph5_broker_protocol::AccountLevel::Free,
+            },
+            plus_expires_days: None,
             
             focus: Focus::None,
             registration_status: String::new(),
@@ -339,6 +345,10 @@ impl<'a> AppState<'a> {
             enable_debug_log: self.enable_debug_log,
             allow_direct: self.allow_direct,
             selected_country: self.selected_country.clone(),
+            last_known_level: Some(match self.last_detected_level {
+                geph5_broker_protocol::AccountLevel::Plus => "Plus".to_string(),
+                geph5_broker_protocol::AccountLevel::Free => "Free".to_string(),
+            }),
         };
         prefs.save();
     }
@@ -373,7 +383,7 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, debug_logs: Arc<Mutex<V
             state.conn_info = ConnInfo::Disconnected;
         }
 
-        let mut user_level = geph5_broker_protocol::AccountLevel::Free;
+        let mut user_level = state.last_detected_level;
         if state.is_running {
             let secret = state.secret_textarea.lines().join("");
             if !secret.is_empty() {
@@ -392,6 +402,10 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, debug_logs: Arc<Mutex<V
                     if let Some(res) = resp.result {
                         if let Ok(Some(ui)) = serde_json::from_value::<Option<geph5_broker_protocol::UserInfo>>(res) {
                             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+                            state.plus_expires_days = ui.plus_expires_unix.map(|exp| {
+                                let secs = exp.saturating_sub(now);
+                                secs as f64 / 86400.0
+                            });
                             if ui.plus_expires_unix.unwrap_or(0) > now {
                                 user_level = geph5_broker_protocol::AccountLevel::Plus;
                             }
@@ -703,6 +717,16 @@ fn draw_status(f: &mut ratatui::Frame, state: &mut AppState, area: Rect) {
     if let Some(notice) = &state.level_notice {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(notice.clone(), Style::default().fg(Color::Yellow))));
+    } else if state.last_detected_level == geph5_broker_protocol::AccountLevel::Plus {
+        let is_chinese = sys_locale::get_locale().unwrap_or_default().contains("zh");
+        let days = state.plus_expires_days.map(|d| format!(" ({} days left)", d.ceil() as u64)).unwrap_or_default();
+        let msg = if is_chinese {
+            format!("欢迎，尊贵的 Plus 用户！{}", days)
+        } else {
+            format!("Welcome, Plus user!{}", days)
+        };
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(msg, Style::default().fg(Color::Green))));
     }
 
     let p = Paragraph::new(lines)
