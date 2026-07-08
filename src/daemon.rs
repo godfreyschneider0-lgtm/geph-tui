@@ -280,6 +280,20 @@ fn default_config() -> geph5_client::Config {
     DEFAULT_CONFIG.clone()
 }
 
+/// Wipe the local token cache database so the daemon re-authenticates
+/// with the correct account level on next start.
+pub fn clear_conn_token_cache() {
+    let cache_dir = dirs::cache_dir().unwrap_or_else(|| std::env::temp_dir());
+    let db_path = cache_dir.join("geph5_tui").join("database.db");
+    if db_path.exists() {
+        if let Err(err) = std::fs::remove_file(&db_path) {
+            tracing::warn!(?err, "failed to clear token cache database");
+        } else {
+            tracing::info!("cleared token cache database");
+        }
+    }
+}
+
 pub fn running_cfg(args: DaemonArgs) -> geph5_client::Config {
     // Start with the template config:
     let mut cfg = default_config();

@@ -267,6 +267,10 @@ struct AppState<'a> {
     node_list_state: ListState,
     selected_country: Option<String>,
     
+    level_notice: Option<String>,
+    needs_cache_clear: bool,
+    last_detected_level: geph5_broker_protocol::AccountLevel,
+    
     focus: Focus,
     registration_status: String,
     registration_idx: Option<usize>,
@@ -307,6 +311,10 @@ impl<'a> AppState<'a> {
             countries: vec![],
             node_list_state: ListState::default(),
             selected_country: prefs.selected_country.clone(),
+            
+            level_notice: None,
+            needs_cache_clear: false,
+            last_detected_level: geph5_broker_protocol::AccountLevel::Free,
             
             focus: Focus::None,
             registration_status: String::new(),
@@ -365,29 +373,44 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, debug_logs: Arc<Mutex<V
             state.conn_info = ConnInfo::Disconnected;
         }
 
-        // Fetch nodes
         let mut user_level = geph5_broker_protocol::AccountLevel::Free;
         if state.is_running {
-            let cred = geph5_broker_protocol::Credential::Secret(state.secret_textarea.lines().join(""));
-            let cred_val = serde_json::to_value(&cred).unwrap_or(serde_json::Value::Null);
-            let ui_jrpc = JrpcRequest {
-                jsonrpc: "2.0".into(),
-                method: "broker_rpc".into(),
-                params: vec![
-                    serde_json::Value::String("get_user_info_by_cred".into()),
-                    serde_json::Value::Array(vec![cred_val]),
-                ],
-                id: JrpcId::Number(99),
-            };
-            if let Ok(resp) = daemon::daemon_rpc(ui_jrpc).await {
-                if let Some(res) = resp.result {
-                    if let Ok(Some(ui)) = serde_json::from_value::<Option<geph5_broker_protocol::UserInfo>>(res) {
-                        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-                        if ui.plus_expires_unix.unwrap_or(0) > now {
-                            user_level = geph5_broker_protocol::AccountLevel::Plus;
+            let secret = state.secret_textarea.lines().join("");
+            if !secret.is_empty() {
+                let cred = geph5_broker_protocol::Credential::Secret(secret);
+                let cred_val = serde_json::to_value(&cred).unwrap_or(serde_json::Value::Null);
+                let ui_jrpc = JrpcRequest {
+                    jsonrpc: "2.0".into(),
+                    method: "broker_rpc".into(),
+                    params: vec![
+                        serde_json::Value::String("get_user_info_by_cred".into()),
+                        serde_json::Value::Array(vec![cred_val]),
+                    ],
+                    id: JrpcId::Number(99),
+                };
+                if let Ok(resp) = daemon::daemon_rpc(ui_jrpc).await {
+                    if let Some(res) = resp.result {
+                        if let Ok(Some(ui)) = serde_json::from_value::<Option<geph5_broker_protocol::UserInfo>>(res) {
+                            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+                            if ui.plus_expires_unix.unwrap_or(0) > now {
+                                user_level = geph5_broker_protocol::AccountLevel::Plus;
+                            }
                         }
                     }
                 }
+            }
+
+            if user_level != state.last_detected_level {
+                state.needs_cache_clear = true;
+                state.level_notice = Some(match user_level {
+                    geph5_broker_protocol::AccountLevel::Plus => {
+                        "VIP detected! Press x then s to reconnect with VIP access.".into()
+                    }
+                    geph5_broker_protocol::AccountLevel::Free => {
+                        "VIP expired. Press x then s to reconnect.".into()
+                    }
+                });
+                state.last_detected_level = user_level;
             }
         }
 
@@ -504,6 +527,11 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, debug_logs: Arc<Mutex<V
                                 http_proxy_port: state.http_textarea.lines().join("").parse().unwrap_or(9910),
                                 enable_debug_log: state.enable_debug_log,
                             };
+                            if state.needs_cache_clear {
+                                daemon::clear_conn_token_cache();
+                                state.needs_cache_clear = false;
+                                state.level_notice = None;
+                            }
                             let _ = start_daemon(args).await;
                         }
                     }
@@ -670,6 +698,11 @@ fn draw_status(f: &mut ratatui::Frame, state: &mut AppState, area: Rect) {
             lines.push(Line::from(Span::styled(path.display().to_string(), Style::default().fg(Color::Yellow))));
             lines.push(Line::from(Span::styled("Please go to this directory and handle the update manually.", Style::default().fg(Color::Yellow))));
         }
+    }
+
+    if let Some(notice) = &state.level_notice {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(notice.clone(), Style::default().fg(Color::Yellow))));
     }
 
     let p = Paragraph::new(lines)
