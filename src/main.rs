@@ -4,7 +4,6 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use isocountry::CountryCode;
-use nanorpc::{JrpcId, JrpcRequest};
 use ratatui::{
     backend::{Backend, CrosstermBackend},
     widgets::{Block, Borders},
@@ -20,9 +19,8 @@ mod event;
 mod state;
 mod ui;
 
-use daemon::{daemon_running, running_cfg, DaemonArgs, ExitConstraint};
-use geph5_broker_protocol::NetStatus;
-use geph5_misc_rpc::client_control::{ConnInfo, RegistrationProgress};
+use daemon::{daemon_running, running_cfg, DaemonRpcTransport};
+use geph5_misc_rpc::client_control::{ConnInfo, ControlClient};
 use state::{AppState, LogWriter, TuiPrefs};
 
 fn main() -> anyhow::Result<()> {
@@ -90,23 +88,6 @@ fn main() -> anyhow::Result<()> {
         let socks5_port: u16 = prefs.socks_port.parse().unwrap_or(9909);
         let http_proxy_port: u16 = prefs.http_port.parse().unwrap_or(9910);
 
-        let args = DaemonArgs {
-            secret: prefs.secret.clone(),
-            metadata: serde_json::Value::Null,
-            prc_whitelist: false,
-            exit: match &prefs.selected_country {
-                Some(country) => ExitConstraint::Country(country.clone()),
-                None => ExitConstraint::Auto,
-            },
-            global_vpn: prefs.global_vpn,
-            listen_all: prefs.listen_all,
-            proxy_autoconf: false,
-            allow_direct: prefs.allow_direct,
-            socks5_port,
-            http_proxy_port,
-            enable_debug_log: prefs.enable_debug_log,
-        };
-
         let listen_ip = if prefs.listen_all {
             "0.0.0.0"
         } else {
@@ -147,7 +128,7 @@ fn main() -> anyhow::Result<()> {
         saved_prefs.last_connected_secret = Some(prefs.secret.clone());
         saved_prefs.save();
 
-        let cfg = running_cfg(args);
+        let cfg = running_cfg(&prefs);
         let client = geph5_client::Client::start(cfg);
         smol::future::block_on(client.wait_until_dead())?;
         return Ok(());
@@ -218,18 +199,8 @@ async fn run_app<B: Backend>(
         // Fetch status
         state.is_running = daemon_running().await;
         if state.is_running {
-            let jrpc = JrpcRequest {
-                jsonrpc: "2.0".into(),
-                method: "conn_info".into(),
-                params: vec![],
-                id: JrpcId::Number(1),
-            };
-            if let Ok(resp) = daemon::daemon_rpc(jrpc).await {
-                if let Some(res) = resp.result {
-                    if let Ok(info) = serde_json::from_value(res) {
-                        state.conn_info = info;
-                    }
-                }
+            if let Ok(info) = ControlClient(DaemonRpcTransport).conn_info().await {
+                state.conn_info = info;
             }
         } else {
             state.conn_info = ConnInfo::Disconnected;
@@ -241,33 +212,25 @@ async fn run_app<B: Backend>(
             if !secret.is_empty() {
                 let cred = geph5_broker_protocol::Credential::Secret(secret);
                 let cred_val = serde_json::to_value(&cred).unwrap_or(serde_json::Value::Null);
-                let ui_jrpc = JrpcRequest {
-                    jsonrpc: "2.0".into(),
-                    method: "broker_rpc".into(),
-                    params: vec![
-                        serde_json::Value::String("get_user_info_by_cred".into()),
-                        serde_json::Value::Array(vec![cred_val]),
-                    ],
-                    id: JrpcId::Number(99),
-                };
-                if let Ok(resp) = daemon::daemon_rpc(ui_jrpc).await {
-                    if let Some(res) = resp.result {
-                        if let Ok(Some(ui)) =
-                            serde_json::from_value::<Option<geph5_broker_protocol::UserInfo>>(res)
-                        {
-                            let now = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap()
-                                .as_secs();
-                            state.plus_expires_days = ui.plus_expires_unix.map(|exp| {
-                                let secs = exp.saturating_sub(now);
-                                secs as f64 / 86400.0
-                            });
-                            if ui.plus_expires_unix.unwrap_or(0) > now {
-                                user_level = geph5_broker_protocol::AccountLevel::Plus;
-                            } else {
-                                user_level = geph5_broker_protocol::AccountLevel::Free;
-                            }
+                if let Ok(Ok(ui_val)) = ControlClient(DaemonRpcTransport)
+                    .broker_rpc("get_user_info_by_cred".into(), vec![cred_val])
+                    .await
+                {
+                    if let Ok(Some(ui)) =
+                        serde_json::from_value::<Option<geph5_broker_protocol::UserInfo>>(ui_val)
+                    {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs();
+                        state.plus_expires_days = ui.plus_expires_unix.map(|exp| {
+                            let secs = exp.saturating_sub(now);
+                            secs as f64 / 86400.0
+                        });
+                        if ui.plus_expires_unix.unwrap_or(0) > now {
+                            user_level = geph5_broker_protocol::AccountLevel::Plus;
+                        } else {
+                            user_level = geph5_broker_protocol::AccountLevel::Free;
                         }
                     }
                 }
@@ -287,76 +250,60 @@ async fn run_app<B: Backend>(
             }
         }
 
-        let ns_jrpc = JrpcRequest {
-            jsonrpc: "2.0".into(),
-            method: "net_status".into(),
-            params: vec![],
-            id: JrpcId::Number(3),
-        };
-        if let Ok(resp) = daemon::daemon_rpc(ns_jrpc).await {
-            if let Some(res) = resp.result {
-                if let Ok(ns) = serde_json::from_value::<NetStatus>(res) {
-                    let mut seen = std::collections::HashSet::new();
-                    state.countries = ns
-                        .exits
-                        .into_iter()
-                        .filter_map(|(_, (_, desc, meta))| {
-                            if !meta.allowed_levels.contains(&user_level) {
-                                return None;
-                            }
-                            let cc = desc.country;
-                            if seen.insert(cc.alpha2().to_string()) {
-                                Some(cc)
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-                    state.countries.sort_by_key(|c| c.alpha2().to_string());
-                }
-            }
+        if let Ok(Ok(ns)) = ControlClient(DaemonRpcTransport).net_status().await {
+            let mut seen = std::collections::HashSet::new();
+            state.countries = ns
+                .exits
+                .into_iter()
+                .filter_map(|(_, (_, desc, meta))| {
+                    if !meta.allowed_levels.contains(&user_level) {
+                        return None;
+                    }
+                    let cc = desc.country;
+                    if seen.insert(cc.alpha2().to_string()) {
+                        Some(cc)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            state.countries.sort_by_key(|c| c.alpha2().to_string());
         }
 
         // Poll registration
         if let Some(idx) = state.registration_idx {
-            let poll_jrpc = JrpcRequest {
-                jsonrpc: "2.0".into(),
-                method: "poll_registration".into(),
-                params: vec![serde_json::json!(idx)],
-                id: JrpcId::Number(4),
-            };
-            if let Ok(resp) = daemon::daemon_rpc(poll_jrpc).await {
-                if let Some(res) = resp.result {
-                    if let Ok(prog) = serde_json::from_value::<RegistrationProgress>(res) {
-                        if let Some(sec) = prog.secret {
-                            state.secret_textarea = tui_textarea::TextArea::default();
-                            state.secret_textarea.insert_str(&sec);
-                            state.secret_textarea.set_block(
-                                Block::default().borders(Borders::ALL).title("Login Secret"),
-                            );
-                            state.registration_status = "Registration complete!".into();
-                            state.registration_idx = None;
-                            state.needs_cache_clear = true;
-                            state.last_detected_level = geph5_broker_protocol::AccountLevel::Free;
-                            state.plus_expires_days = None;
-                            state.level_notice = if state.is_running {
-                                Some(
-                                    "New account registered. Press 'x' then 's' to reconnect."
-                                        .into(),
-                                )
-                            } else {
-                                None
-                            };
-                            state.sync_prefs();
+            match ControlClient(DaemonRpcTransport)
+                .poll_registration(idx)
+                .await
+            {
+                Ok(Ok(prog)) => {
+                    if let Some(sec) = prog.secret {
+                        state.secret_textarea = tui_textarea::TextArea::default();
+                        state.secret_textarea.insert_str(&sec);
+                        state.secret_textarea.set_block(
+                            Block::default().borders(Borders::ALL).title("Login Secret"),
+                        );
+                        state.registration_status = "Registration complete!".into();
+                        state.registration_idx = None;
+                        state.needs_cache_clear = true;
+                        state.last_detected_level = geph5_broker_protocol::AccountLevel::Free;
+                        state.plus_expires_days = None;
+                        state.level_notice = if state.is_running {
+                            Some("New account registered. Press 'x' then 's' to reconnect.".into())
                         } else {
-                            state.registration_status =
-                                format!("Registering... {:.1}%", prog.progress * 100.0);
-                        }
+                            None
+                        };
+                        state.sync_prefs();
+                    } else {
+                        state.registration_status =
+                            format!("Registering... {:.1}%", prog.progress * 100.0);
                     }
-                } else if let Some(err) = resp.error {
-                    state.registration_status = format!("Registration failed: {}", err.message);
+                }
+                Ok(Err(msg)) => {
+                    state.registration_status = format!("Registration failed: {}", msg);
                     state.registration_idx = None;
                 }
+                Err(_) => {}
             }
         }
 

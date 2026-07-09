@@ -1,8 +1,8 @@
 use crossterm::event::{KeyCode, KeyEvent};
-use nanorpc::{JrpcId, JrpcRequest};
+use geph5_misc_rpc::client_control::ControlClient;
 use ratatui::style::{Color, Style};
 
-use crate::daemon::{self, DaemonArgs, ExitConstraint};
+use crate::daemon::{self, DaemonRpcTransport};
 use crate::state::{AppState, Focus, TabIdx};
 
 pub fn handle_focused_input<'a>(state: &mut AppState<'a>, key: KeyEvent) {
@@ -42,29 +42,6 @@ pub async fn handle_global_key<'a>(state: &mut AppState<'a>, key: KeyEvent) -> b
         KeyCode::Char('s') => {
             if !state.is_running {
                 let current_secret = state.secret_textarea.lines().join("");
-                let exit = match &state.selected_country {
-                    Some(country) => ExitConstraint::Country(country.clone()),
-                    None => ExitConstraint::Auto,
-                };
-
-                let args = DaemonArgs {
-                    secret: current_secret.clone(),
-                    metadata: serde_json::Value::Null,
-                    prc_whitelist: false,
-                    exit,
-                    global_vpn: state.global_vpn,
-                    listen_all: state.listen_all,
-                    proxy_autoconf: false,
-                    allow_direct: state.allow_direct,
-                    socks5_port: state
-                        .socks_textarea
-                        .lines()
-                        .join("")
-                        .parse()
-                        .unwrap_or(9909),
-                    http_proxy_port: state.http_textarea.lines().join("").parse().unwrap_or(9910),
-                    enable_debug_log: state.enable_debug_log,
-                };
                 let secret_changed =
                     state.last_connected_secret.as_deref() != Some(current_secret.as_str());
                 if secret_changed || state.needs_cache_clear {
@@ -73,8 +50,9 @@ pub async fn handle_global_key<'a>(state: &mut AppState<'a>, key: KeyEvent) -> b
                     state.level_notice = None;
                 }
                 state.last_connected_secret = Some(current_secret);
-                state.sync_prefs();
-                let _ = daemon::start_daemon(args).await;
+                let prefs = state.to_prefs();
+                prefs.save();
+                let _ = daemon::start_daemon(&prefs).await;
             }
         }
         KeyCode::Char('x') => {
@@ -101,21 +79,15 @@ pub async fn handle_global_key<'a>(state: &mut AppState<'a>, key: KeyEvent) -> b
                 .set_style(Style::default().fg(Color::Yellow));
         }
         KeyCode::Char('r') if state.tab == TabIdx::Config => {
-            let reg_jrpc = JrpcRequest {
-                jsonrpc: "2.0".into(),
-                method: "start_registration".into(),
-                params: vec![],
-                id: JrpcId::Number(5),
-            };
-            if let Ok(resp) = daemon::daemon_rpc(reg_jrpc).await {
-                if let Some(res) = resp.result {
-                    if let Ok(idx) = serde_json::from_value::<usize>(res) {
-                        state.registration_idx = Some(idx);
-                        state.registration_status = "Registration started...".into();
-                    }
-                } else if let Some(err) = resp.error {
-                    state.registration_status = format!("Failed to start: {}", err.message);
+            match ControlClient(DaemonRpcTransport).start_registration().await {
+                Ok(Ok(idx)) => {
+                    state.registration_idx = Some(idx);
+                    state.registration_status = "Registration started...".into();
                 }
+                Ok(Err(msg)) => {
+                    state.registration_status = format!("Failed to start: {}", msg);
+                }
+                Err(_) => {}
             }
         }
         KeyCode::Char('v') if state.tab == TabIdx::Config => {

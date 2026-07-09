@@ -7,9 +7,11 @@ use std::{
 };
 
 use anyhow::Context;
+use async_trait::async_trait;
 use futures_util::{io::BufReader, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
+use geph5_misc_rpc::client_control::ControlClient;
 use isocountry::CountryCode;
-use nanorpc::{JrpcId, JrpcRequest, JrpcResponse, RpcTransport};
+use nanorpc::{JrpcRequest, JrpcResponse, RpcTransport};
 use oneshot::channel as oneshot_channel;
 use oneshot::Receiver as OneshotReceiver;
 use smol::future::FutureExt as SmolFutureExt;
@@ -21,34 +23,7 @@ use tempfile::NamedTempFile;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct DaemonArgs {
-    pub secret: String,
-    pub metadata: serde_json::Value,
-    pub prc_whitelist: bool,
-    pub exit: ExitConstraint,
-    pub global_vpn: bool,
-    pub listen_all: bool,
-    pub proxy_autoconf: bool,
-    pub allow_direct: bool,
-    pub socks5_port: u16,
-    pub http_proxy_port: u16,
-    pub enable_debug_log: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "lowercase")]
-pub enum ExitConstraint {
-    Auto,
-    Country(String),
-    #[serde(untagged)]
-    Manual {
-        city: String,
-        country: String,
-    },
-}
+use crate::state::TuiPrefs;
 
 const DEFAULT_CONFIG_YAML: &str = include_str!("default-config.yaml");
 
@@ -64,20 +39,11 @@ const SOCKS5_ADDR: SocketAddr =
 pub const HTTP_ADDR: SocketAddr =
     SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 9910);
 
-pub async fn restart_daemon(args: DaemonArgs) -> anyhow::Result<()> {
-    if args.global_vpn {
-        anyhow::bail!("cannot restart in VPN mode")
-    }
-    stop_daemon_inner().await?;
-    let _ = start_daemon_inner(args)?;
-    Ok(())
-}
-
-pub async fn start_daemon(args: DaemonArgs) -> anyhow::Result<()> {
+pub async fn start_daemon(prefs: &TuiPrefs) -> anyhow::Result<()> {
     // if args.proxy_autoconf {
     //     configure_proxy()?;
     // }
-    let crash_rx = start_daemon_inner(args)?;
+    let crash_rx = start_daemon_inner(prefs)?;
     let start_fut = async {
         wait_daemon_start()
             .timeout(Duration::from_secs(30))
@@ -100,8 +66,8 @@ pub async fn start_daemon(args: DaemonArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn start_daemon_inner(args: DaemonArgs) -> anyhow::Result<OneshotReceiver<String>> {
-    let cfg = running_cfg(args.clone());
+fn start_daemon_inner(prefs: &TuiPrefs) -> anyhow::Result<OneshotReceiver<String>> {
+    let cfg = running_cfg(prefs);
 
     let mut tfile = NamedTempFile::with_suffix(".yaml")?;
     let val = serde_json::to_value(&cfg)?;
@@ -125,7 +91,7 @@ fn start_daemon_inner(args: DaemonArgs) -> anyhow::Result<OneshotReceiver<String
             let mut cmd = std::process::Command::new("pkexec");
             cmd.arg(exec_path).arg("--config").arg(path);
             cmd.stdout(Stdio::null()); // Mute stdout
-            if args.enable_debug_log {
+            if prefs.enable_debug_log {
                 if let Ok(file) = std::fs::OpenOptions::new()
                     .create(true)
                     .append(true)
@@ -164,7 +130,7 @@ fn start_daemon_inner(args: DaemonArgs) -> anyhow::Result<OneshotReceiver<String
         #[cfg(windows)]
         cmd.creation_flags(0x08000000);
         cmd.stdout(Stdio::null()); // Mute stdout
-        if args.enable_debug_log {
+        if prefs.enable_debug_log {
             if let Ok(file) = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
@@ -213,13 +179,7 @@ pub async fn stop_daemon() -> anyhow::Result<()> {
 }
 
 async fn stop_daemon_inner() -> anyhow::Result<()> {
-    let jrpc = JrpcRequest {
-        jsonrpc: "2.0".into(),
-        method: "stop".into(),
-        params: vec![],
-        id: JrpcId::Number(1),
-    };
-    daemon_rpc(jrpc).await?;
+    let _ = ControlClient(DaemonRpcTransport).stop().await;
     smol::Timer::after(Duration::from_millis(1000)).await;
     Ok(())
 }
@@ -274,6 +234,16 @@ async fn daemon_rpc_direct(inner: JrpcRequest) -> anyhow::Result<JrpcResponse> {
     DAEMON.control_client().0.call_raw(inner).await
 }
 
+pub struct DaemonRpcTransport;
+
+#[async_trait]
+impl RpcTransport for DaemonRpcTransport {
+    type Error = anyhow::Error;
+    async fn call_raw(&self, req: JrpcRequest) -> Result<JrpcResponse, Self::Error> {
+        daemon_rpc(req).await
+    }
+}
+
 fn default_config() -> geph5_client::Config {
     static DEFAULT_CONFIG: LazyLock<geph5_client::Config> = LazyLock::new(|| {
         let value: serde_json::Value = serde_yaml::from_str(DEFAULT_CONFIG_YAML)
@@ -300,35 +270,29 @@ pub fn clear_conn_token_cache() {
     tracing::info!("cleared token cache database");
 }
 
-pub fn running_cfg(args: DaemonArgs) -> geph5_client::Config {
-    // Start with the template config:
+pub fn running_cfg(prefs: &TuiPrefs) -> geph5_client::Config {
     let mut cfg = default_config();
 
-    // Override fields that depend on `args`:
-    cfg.vpn = args.global_vpn;
-    cfg.passthrough_china = args.prc_whitelist;
-    cfg.credentials = geph5_broker_protocol::Credential::Secret(args.secret);
-    let listen_ip = if args.listen_all {
+    cfg.vpn = prefs.global_vpn;
+    cfg.passthrough_china = false;
+    cfg.credentials = geph5_broker_protocol::Credential::Secret(prefs.secret.clone());
+    let listen_ip = if prefs.listen_all {
         IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0))
     } else {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
     };
-    cfg.socks5_listen = Some(SocketAddr::new(listen_ip, args.socks5_port));
-    cfg.http_proxy_listen = Some(SocketAddr::new(listen_ip, args.http_proxy_port));
+    let socks5_port: u16 = prefs.socks_port.parse().unwrap_or(9909);
+    let http_proxy_port: u16 = prefs.http_port.parse().unwrap_or(9910);
+    cfg.socks5_listen = Some(SocketAddr::new(listen_ip, socks5_port));
+    cfg.http_proxy_listen = Some(SocketAddr::new(listen_ip, http_proxy_port));
 
-    cfg.exit_constraint = match args.exit {
-        ExitConstraint::Auto => geph5_client::ExitConstraint::Auto,
-        ExitConstraint::Country(country) => {
-            geph5_client::ExitConstraint::Country(CountryCode::for_alpha2(&country).unwrap())
-        }
-        ExitConstraint::Manual { city, country } => geph5_client::ExitConstraint::CountryCity(
-            CountryCode::for_alpha2(&country).unwrap(),
-            city,
-        ),
+    cfg.exit_constraint = match &prefs.selected_country {
+        Some(cc) => geph5_client::ExitConstraint::Country(CountryCode::for_alpha2(cc).unwrap()),
+        None => geph5_client::ExitConstraint::Auto,
     };
 
-    cfg.sess_metadata = args.metadata;
-    cfg.allow_direct = args.allow_direct;
+    cfg.sess_metadata = serde_json::Value::Null;
+    cfg.allow_direct = prefs.allow_direct;
 
     cfg
 }

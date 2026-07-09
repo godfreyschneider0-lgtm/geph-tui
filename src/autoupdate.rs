@@ -8,15 +8,13 @@ use std::{
 };
 
 use anyhow::Context;
-use async_trait::async_trait;
 use rand::Rng;
 
 use geph5_misc_rpc::client_control::ControlClient;
-use nanorpc::{JrpcRequest, JrpcResponse, RpcTransport};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
-use crate::daemon::daemon_rpc;
+use crate::daemon::DaemonRpcTransport;
 
 const UPDATE_MEAN_INTERVAL_HOURS: f64 = 6.0;
 const RETRY_DELAY_SECONDS: u64 = 600;
@@ -215,13 +213,3 @@ const TRACK: &str = "macos-stable";
 
 #[cfg(target_os = "android")]
 const TRACK: &str = "linux-stable";
-
-struct DaemonRpcTransport;
-
-#[async_trait]
-impl RpcTransport for DaemonRpcTransport {
-    type Error = anyhow::Error;
-    async fn call_raw(&self, req: JrpcRequest) -> Result<JrpcResponse, Self::Error> {
-        daemon_rpc(req).await
-    }
-}

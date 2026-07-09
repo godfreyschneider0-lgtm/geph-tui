@@ -181,8 +181,8 @@ impl<'a> AppState<'a> {
         }
     }
 
-    pub fn sync_prefs(&self) {
-        let prefs = TuiPrefs {
+    pub fn to_prefs(&self) -> TuiPrefs {
+        TuiPrefs {
             secret: self.secret_textarea.lines().join(""),
             socks_port: self.socks_textarea.lines().join(""),
             http_port: self.http_textarea.lines().join(""),
@@ -196,7 +196,10 @@ impl<'a> AppState<'a> {
                 geph5_broker_protocol::AccountLevel::Free => "Free".to_string(),
             }),
             last_connected_secret: self.last_connected_secret.clone(),
-        };
-        prefs.save();
+        }
+    }
+
+    pub fn sync_prefs(&self) {
+        self.to_prefs().save();
     }
 }
