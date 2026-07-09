@@ -7,11 +7,11 @@ use std::{
 };
 
 use anyhow::Context;
-use futures_util::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, io::BufReader};
+use futures_util::{io::BufReader, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use isocountry::CountryCode;
 use nanorpc::{JrpcId, JrpcRequest, JrpcResponse, RpcTransport};
-use oneshot::Receiver as OneshotReceiver;
 use oneshot::channel as oneshot_channel;
+use oneshot::Receiver as OneshotReceiver;
 use smol::future::FutureExt as SmolFutureExt;
 use smol::net::TcpStream;
 use smol_timeout2::TimeoutExt;
@@ -44,7 +44,10 @@ pub enum ExitConstraint {
     Auto,
     Country(String),
     #[serde(untagged)]
-    Manual { city: String, country: String },
+    Manual {
+        city: String,
+        country: String,
+    },
 }
 
 const DEFAULT_CONFIG_YAML: &str = include_str!("default-config.yaml");
@@ -123,7 +126,11 @@ fn start_daemon_inner(args: DaemonArgs) -> anyhow::Result<OneshotReceiver<String
             cmd.arg(exec_path).arg("--config").arg(path);
             cmd.stdout(Stdio::null()); // Mute stdout
             if args.enable_debug_log {
-                if let Ok(file) = std::fs::OpenOptions::new().create(true).append(true).open("gephgui.log") {
+                if let Ok(file) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open("gephgui.log")
+                {
                     cmd.stderr(Stdio::from(file));
                 } else {
                     cmd.stderr(Stdio::piped());
@@ -158,7 +165,11 @@ fn start_daemon_inner(args: DaemonArgs) -> anyhow::Result<OneshotReceiver<String
         cmd.creation_flags(0x08000000);
         cmd.stdout(Stdio::null()); // Mute stdout
         if args.enable_debug_log {
-            if let Ok(file) = std::fs::OpenOptions::new().create(true).append(true).open("gephgui.log") {
+            if let Ok(file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("gephgui.log")
+            {
                 cmd.stderr(Stdio::from(file));
             } else {
                 cmd.stderr(Stdio::piped());
@@ -269,7 +280,7 @@ fn default_config() -> geph5_client::Config {
             .expect("default-config.yaml must deserialize into serde_json::Value");
         let mut cfg: geph5_client::Config = serde_json::from_value(value)
             .expect("default-config.yaml must deserialize into geph5_client::Config");
-            
+
         let cache_dir = dirs::cache_dir().unwrap_or_else(|| std::env::temp_dir());
         let geph_cache = cache_dir.join("geph5_tui");
         let _ = std::fs::create_dir_all(&geph_cache);
@@ -282,10 +293,9 @@ fn default_config() -> geph5_client::Config {
 
 pub fn clear_conn_token_cache() {
     let cache_dir = dirs::cache_dir().unwrap_or_else(|| std::env::temp_dir());
-    let db_path = cache_dir.join("geph5_tui").join("database.db");
-    for suffix in ["", "-wal", "-shm"] {
-        let path = format!("{}.{}", db_path.display(), suffix);
-        let _ = std::fs::remove_file(path);
+    let db_dir = cache_dir.join("geph5_tui");
+    for name in ["database.db", "database.db-wal", "database.db-shm"] {
+        let _ = std::fs::remove_file(db_dir.join(name));
     }
     tracing::info!("cleared token cache database");
 }
@@ -311,12 +321,10 @@ pub fn running_cfg(args: DaemonArgs) -> geph5_client::Config {
         ExitConstraint::Country(country) => {
             geph5_client::ExitConstraint::Country(CountryCode::for_alpha2(&country).unwrap())
         }
-        ExitConstraint::Manual { city, country } => {
-            geph5_client::ExitConstraint::CountryCity(
-                CountryCode::for_alpha2(&country).unwrap(),
-                city,
-            )
-        }
+        ExitConstraint::Manual { city, country } => geph5_client::ExitConstraint::CountryCity(
+            CountryCode::for_alpha2(&country).unwrap(),
+            city,
+        ),
     };
 
     cfg.sess_metadata = args.metadata;

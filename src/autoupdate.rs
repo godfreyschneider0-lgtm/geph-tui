@@ -128,8 +128,6 @@ async fn ensure_update_cached() -> anyhow::Result<CacheResult> {
     })
 }
 
-
-
 fn cache_root() -> anyhow::Result<PathBuf> {
     let path = dirs::cache_dir()
         .context("no cache dir in the system")?
