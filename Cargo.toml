@@ -17,7 +17,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.2.102"
+version = "1.0.0"
 repository = "https://github.com/geph-official/geph5"
 license = "ISC"
 edition = "2024"
