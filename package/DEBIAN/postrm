@@ -1,0 +1,20 @@
+#!/bin/bash
+set -e
+
+# postrm — runs after the package is removed
+
+case "$1" in
+    purge)
+        # Remove user config
+        rm -f ~/.config/geph5_tui_prefs.json
+        # Remove connection cache
+        rm -rf ~/.cache/geph5_tui/
+        # Remove auto-update downloads
+        rm -rf ~/.cache/geph5-dl/
+        # Remove daemon runtime directory
+        rm -rf "${TMPDIR:-/tmp}/miku/"
+        ;;
+    remove|abort-upgrade|abort-remove|abort-deconfigure)
+        # Config and cache are preserved on plain `apt remove`
+        ;;
+esac

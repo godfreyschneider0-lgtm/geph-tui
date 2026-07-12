@@ -1,0 +1,11 @@
+#!/bin/bash
+set -e
+
+case "$1" in
+    purge)
+        rm -f ~/.config/geph5_tui_prefs.json
+        rm -rf ~/.cache/geph5_tui/
+        rm -rf ~/.cache/geph5-dl/
+        rm -rf "${TMPDIR:-/tmp}/miku/"
+        ;;
+esac

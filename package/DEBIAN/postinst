@@ -1,0 +1,11 @@
+#!/bin/bash
+set -e
+
+# postinst — runs after the package files are unpacked
+
+case "$1" in
+    configure)
+        # Nothing extra needed; binaries are already in place.
+        # Future: setcap cap_net_admin+ep /usr/local/bin/MikuClub (if TUN without root)
+        ;;
+esac
