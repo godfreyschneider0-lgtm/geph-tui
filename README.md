@@ -99,27 +99,24 @@ sudo apt purge mikuclub           # remove everything
 
 ### Termux (aarch64)
 
-Requires Docker with [termux/package-builder](https://github.com/termux/termux-packages) image.
+Builds via [termux-packages](https://github.com/termux/termux-packages) Docker CI.
 
 ```shell
-# 1. Clone termux-packages (one-time)
+# 1. Clone termux-packages
 git clone https://github.com/termux/termux-packages.git
 
-# 2. Copy the package definition into it (one-time, or after each update)
+# 2. Copy the package definition into it
 cp -r packages/mikuclub termux-packages/packages/
 
 # 3. Build via Docker CI
-./package.sh --termux
+cd termux-packages
+TERMUX_DOCKER_RUN_EXTRA_ARGS="--security-opt apparmor=unconfined" \
+    ./scripts/run-docker.sh ./build-package.sh -I -f mikuclub
 
 # 4. Transfer to device and install
-adb push mikuclub_1.0.0_aarch64.deb /data/local/tmp/
-cp /data/local/tmp/mikuclub_1.0.0_aarch64.deb ~/storage/downloads/
-pkg install ~/storage/downloads/mikuclub_1.0.0_aarch64.deb
+adb push output/mikuclub_*.deb /data/local/tmp/
+pkg install /data/local/tmp/mikuclub_*.deb
 ```
-
-> **Note**: The `packages/mikuclub/` directory in this repo contains the Termux
-> `build.sh`. It is not used by the Linux build — it only exists for copying
-> into `termux-packages/`.
 
 ### File Layout
 

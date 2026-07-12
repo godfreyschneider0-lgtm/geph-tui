@@ -2,3 +2,4 @@ target/
 gephgui-wry/
 .omo/
 *.deb
+termux-packages/

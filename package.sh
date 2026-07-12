@@ -2,19 +2,17 @@
 set -euo pipefail
 
 #
-# package.sh — Build MikuClub .deb packages
+# package.sh — Build MikuClub .deb packages (Linux)
 #
 # Usage:
-#   ./package.sh                # Default: cargo deb (Linux, auto-compile + package)
+#   ./package.sh                # Default: cargo deb (auto-compile + package)
 #   ./package.sh --skip-build    # cargo deb --no-build (use existing binary)
-#   ./package.sh --manual       # Manual dpkg-deb (uses package/DEBIAN/ templates, Linux)
-#   ./package.sh --termux       # Docker CI build for Termux .deb (aarch64)
+#   ./package.sh --manual       # Manual dpkg-deb (uses package/DEBIAN/ templates)
 #   ./package.sh --install      # Install immediately after build
 #
 # Output:
 #   cargo-deb -> target/debian/mikuclub_<VERSION>_<ARCH>.deb
 #   manual    -> ./mikuclub_<VERSION>_<ARCH>.deb
-#   termux     -> ./mikuclub_<VERSION>_aarch64.deb
 #
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")") && pwd)"
@@ -32,7 +30,6 @@ CARGO_DEB_EXTRA_ARGS=()
 
 for arg in "${@:-}"; do
     case "$arg" in
-        --termux)      MODE="termux" ;;
         --manual)      MODE="manual" ;;
         --install)     INSTALL=true ;;
         --skip-build)  CARGO_DEB_EXTRA_ARGS+=("--no-build") ;;
@@ -40,10 +37,9 @@ for arg in "${@:-}"; do
 Usage: $0 [options]
 
   (default)      cargo deb build (Linux)
-  --termux       Docker CI build (Termux, aarch64)
   --manual       Manual dpkg-deb (uses package/DEBIAN/ templates)
   --skip-build   Skip compilation
-  --install      Install immediately after build (dpkg -i / pkg install)
+  --install      Install immediately after build (dpkg -i)
 EOF
                         exit 0 ;;
         *) die "Unknown argument: $arg" ;;
@@ -75,65 +71,6 @@ if [ "$MODE" = "cargo-deb" ]; then
         echo "  Install:  sudo dpkg -i ${OUTPUT##*/}"
         echo "  Remove:   sudo apt remove mikuclub"
         echo "  Purge:    sudo apt purge mikuclub"
-    fi
-    exit 0
-fi
-
-# ── termux mode (Docker CI) ────────────────────────────
-if [ "$MODE" = "termux" ]; then
-    command -v docker >/dev/null 2>&1 \
-        || die "docker not found. Install Docker first."
-
-    TERMUX_PACKAGES_DIR="${TERMUX_PACKAGES_DIR:-${REPO_ROOT}/termux-packages}"
-    if [ ! -d "$TERMUX_PACKAGES_DIR" ]; then
-        die "termux-packages not found at '$TERMUX_PACKAGES_DIR'."
-              "Clone it: git clone https://github.com/termux/termux-packages.git"
-    fi
-
-    # Check if mikuclub build.sh exists
-    if [ ! -f "$TERMUX_PACKAGES_DIR/packages/mikuclub/build.sh" ]; then
-        die "packages/mikuclub/build.sh not found in '$TERMUX_PACKAGES_DIR'."
-              "See PACKAGING.md for setup instructions."
-    fi
-
-    # Extra Docker CI arguments (AppArmor compatibility)
-    DOCKER_EXTRA_ARGS="${TERMUX_DOCKER_EXTRA_ARGS:---security-opt apparmor=unconfined}"
-
-    info "Building Termux deb via Docker CI ..."
-    info "  termux-packages: $TERMUX_PACKAGES_DIR"
-    info "  docker extra:  $DOCKER_EXTRA_ARGS"
-    echo ""
-
-    BUILD_CMD="TERMUX_DOCKER_RUN_EXTRA_ARGS=\"$DOCKER_EXTRA_ARGS\" ./scripts/run-docker.sh ./build-package.sh -I -f mikuclub"
-
-    if $INSTALL; then
-        die "--install is not supported for Termux mode."
-              "Copy the output .deb to your device and run: pkg install mikuclub_*.deb"
-    fi
-
-    ( cd "$TERMUX_PACKAGES_DIR" && eval "$BUILD_CMD" )
-
-    # Copy output from Docker container
-    DEB_FILE="$TERMUX_PACKAGES_DIR/output/mikuclub_"*"*.deb
-    if ls $DEB_FILE 2>/dev/null | head -1 | grep -q .; then
-        cp $DEB_FILE "$REPO_ROOT/"
-        echo ""
-        ok "Termux deb built successfully!"
-        for f in $DEB_FILE; do
-            [ -f "$f" ] || continue
-            cp "$f" "$REPO_ROOT/"
-            echo "  File:     $(basename "$f") -> $REPO_ROOT/"
-            echo "  Size:     $(du -h "$REPO_ROOT/$(basename "$f")" | cut -f1)"
-        done
-        echo ""
-        echo "  Transfer to device and install:"
-        echo "    adb push $(basename $DEB_FILE) /data/local/tmp/"
-        echo "    termux-setup-storage  # if needed"
-        echo "    cp /data/local/tmp/$(basename $DEB_FILE) ~/storage/downloads/"
-        echo "    pkg install ~/storage/downloads/$(basename $DEB_FILE)"
-    else
-        echo ""
-        die "Build completed but no .deb found in output/. Check build logs above."
     fi
     exit 0
 fi
