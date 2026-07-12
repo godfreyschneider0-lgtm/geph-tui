@@ -69,5 +69,76 @@ gephgui-tui: ELF shared object, 64-bit LSB arm64, dynamic (/system/bin/linker64)
 - In the **Regions** tab: `Up`/`Down` to move, `Enter` to select a region, `a` for Auto
   (the specific exit node within a region is chosen automatically)
 
+## Packaging
+
+Release binary name: **MikuClub**. The Cargo package `gephgui-tui` is the development name.
+
+### Prerequisites
+
+| Method | Requires |
+|---|---|
+| Linux (cargo-deb) | `cargo install cargo-deb` |
+| Linux (manual) | `dpkg-deb` |
+| Termux | `docker`, `git clone https://github.com/termux/termux-packages.git` |
+
+### Linux
+
+```shell
+# Recommended: cargo-deb (auto-detects deps, xz compression)
+./package.sh
+./package.sh --install        # build + dpkg -i
+
+# Alternative: manual dpkg-deb
+./package.sh --manual
+
+# Install / remove / purge
+sudo dpkg -i mikuclub_*.deb
+sudo apt remove mikuclub           # remove, keep config/cache
+sudo apt purge mikuclub           # remove everything
+```
+
+### Termux (aarch64)
+
+Requires Docker with [termux/package-builder](https://github.com/termux/termux-packages) image.
+
+```shell
+# 1. Clone termux-packages (one-time)
+git clone https://github.com/termux/termux-packages.git
+
+# 2. Copy the package definition into it (one-time, or after each update)
+cp -r packages/mikuclub termux-packages/packages/
+
+# 3. Build via Docker CI
+./package.sh --termux
+
+# 4. Transfer to device and install
+adb push mikuclub_1.0.0_aarch64.deb /data/local/tmp/
+cp /data/local/tmp/mikuclub_1.0.0_aarch64.deb ~/storage/downloads/
+pkg install ~/storage/downloads/mikuclub_1.0.0_aarch64.deb
+```
+
+> **Note**: The `packages/mikuclub/` directory in this repo contains the Termux
+> `build.sh`. It is not used by the Linux build — it only exists for copying
+> into `termux-packages/`.
+
+### File Layout
+
+```
+geph-tui/
+├── package.sh                      # One-click packaging script
+├── mikuctl                        # Daemon control script (start/stop/status/log/restart)
+├── package/
+│   ├── DEBIAN/                    # Manual dpkg-deb templates (Linux fallback)
+│   │   ├── control.template
+│   │   ├── postinst
+│   │   └── postrm
+│   └── deb-scripts/               # cargo-deb maintainer scripts (Linux)
+│       ├── postinst
+│       └── postrm
+└── packages/                      # Termux package definition (copy to termux-packages/)
+    └── mikuclub/
+        └── build.sh
+```
+
 ## License
 The code is generally licensed under MPL 2.0. Low-level libraries useful to a wide variety of projects, such as the `sillad` framework, are generally licensed under the ISC license.

@@ -1,3 +1,4 @@
 target/
 gephgui-wry/
 .omo/
+*.deb
