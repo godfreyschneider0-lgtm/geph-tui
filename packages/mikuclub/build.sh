@@ -1,0 +1,35 @@
+TERMUX_PKG_HOMEPAGE=https://github.com/godfreyschneider0-lgtm/gephgui-tui
+TERMUX_PKG_DESCRIPTION="TUI client for Geph 5 (MikuClub)"
+TERMUX_PKG_LICENSE="MPL-2.0"
+TERMUX_PKG_MAINTAINER="@godfreyschneider0-lgtm"
+TERMUX_PKG_VERSION="1.0.0"
+TERMUX_PKG_SRCURL=https://github.com/godfreyschneider0-lgtm/gephgui-tui.git
+TERMUX_PKG_GIT_BRANCH="main"
+TERMUX_PKG_BUILD_IN_SRC=true
+TERMUX_PKG_AUTO_UPDATE=false
+
+termux_step_pre_configure() {
+    cd "$TERMUX_PKG_SRCDIR"
+    git submodule update --init --recursive --depth=1
+
+    termux_setup_rust
+    : "${CARGO_HOME:=$HOME/.cargo}"
+    export CARGO_HOME
+    cargo fetch --target "${CARGO_TARGET_NAME}"
+}
+
+termux_step_make() {
+    cd "$TERMUX_PKG_SRCDIR"
+    cargo build --jobs "$TERMUX_PKG_MAKE_PROCESSES" --release \
+        --target "$CARGO_TARGET_NAME"
+}
+
+termux_step_make_install() {
+    install -Dm700 \
+        "$TERMUX_PKG_SRCDIR/target/${CARGO_TARGET_NAME}/release/gephgui-tui" \
+        "$TERMUX_PREFIX/bin/MikuClub"
+
+    install -Dm700 \
+        "$TERMUX_PKG_SRCDIR/mikuctl" \
+        "$TERMUX_PREFIX/bin/mikuctl"
+}
