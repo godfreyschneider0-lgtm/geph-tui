@@ -1,4 +1,4 @@
-use geph5_misc_rpc::client_control::ConnInfo;
+use geph5_misc_rpc::client_control::{ConnInfo, NewsItem};
 use isocountry::CountryCode;
 use ratatui::widgets::ListState;
 use serde::{Deserialize, Serialize};
@@ -56,7 +56,6 @@ pub struct TuiPrefs {
     pub secret: String,
     pub socks_port: String,
     pub http_port: String,
-    pub global_vpn: bool,
     pub listen_all: bool,
     pub enable_debug_log: bool,
     pub allow_direct: bool,
@@ -104,7 +103,6 @@ pub struct AppState<'a> {
     pub socks_textarea: TextArea<'a>,
     pub http_textarea: TextArea<'a>,
     pub listen_all: bool,
-    pub global_vpn: bool,
     pub allow_direct: bool,
 
     // Nodes
@@ -113,6 +111,7 @@ pub struct AppState<'a> {
     pub selected_country: Option<String>,
 
     pub level_notice: Option<String>,
+    pub news_items: Vec<NewsItem>,
     pub needs_cache_clear: bool,
     pub last_detected_level: geph5_broker_protocol::AccountLevel,
     pub plus_expires_days: Option<f64>,
@@ -126,6 +125,8 @@ pub struct AppState<'a> {
     pub debug_scroll: u16,
     pub debug_auto_scroll: bool,
     pub enable_debug_log: bool,
+
+    pub status_scroll: u16,
 
     pub update_info: Option<(String, std::path::PathBuf)>,
 }
@@ -152,7 +153,6 @@ impl<'a> AppState<'a> {
             socks_textarea: socks,
             http_textarea: http,
             listen_all: prefs.listen_all,
-            global_vpn: prefs.global_vpn,
             allow_direct: prefs.allow_direct,
 
             countries: vec![],
@@ -160,6 +160,7 @@ impl<'a> AppState<'a> {
             selected_country: prefs.selected_country.clone(),
 
             level_notice: None,
+            news_items: vec![],
             needs_cache_clear: false,
             last_detected_level: match prefs.last_known_level.as_deref() {
                 Some("Plus") => geph5_broker_protocol::AccountLevel::Plus,
@@ -177,6 +178,8 @@ impl<'a> AppState<'a> {
             debug_auto_scroll: true,
             enable_debug_log: prefs.enable_debug_log,
 
+            status_scroll: 0,
+
             update_info: None,
         }
     }
@@ -186,7 +189,6 @@ impl<'a> AppState<'a> {
             secret: self.secret_textarea.lines().join(""),
             socks_port: self.socks_textarea.lines().join(""),
             http_port: self.http_textarea.lines().join(""),
-            global_vpn: self.global_vpn,
             listen_all: self.listen_all,
             enable_debug_log: self.enable_debug_log,
             allow_direct: self.allow_direct,

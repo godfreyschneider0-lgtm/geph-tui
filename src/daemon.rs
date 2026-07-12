@@ -30,15 +30,6 @@ const DEFAULT_CONFIG_YAML: &str = include_str!("default-config.yaml");
 const CONTROL_ADDR: SocketAddr =
     SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12222);
 
-pub const PAC_ADDR: SocketAddr =
-    SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12223);
-
-const SOCKS5_ADDR: SocketAddr =
-    SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 9909);
-
-pub const HTTP_ADDR: SocketAddr =
-    SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 9910);
-
 pub async fn start_daemon(prefs: &TuiPrefs) -> anyhow::Result<()> {
     // if args.proxy_autoconf {
     //     configure_proxy()?;
@@ -78,81 +69,33 @@ fn start_daemon_inner(prefs: &TuiPrefs) -> anyhow::Result<OneshotReceiver<String
 
     let (sender, receiver) = oneshot_channel::<String>();
 
-    if cfg.vpn {
-        #[cfg(target_os = "linux")]
+    let mut cmd = Command::new(std::env::current_exe().unwrap());
+    cmd.arg("--config").arg(path);
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000);
+    cmd.stdout(Stdio::null()); // Mute stdout
+    if prefs.enable_debug_log {
+        if let Ok(file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("gephgui.log")
         {
-            let exec_path = std::env::var("APPIMAGE").unwrap_or_else(|_| {
-                std::env::current_exe()
-                    .expect("could not get current_exe")
-                    .display()
-                    .to_string()
-            });
-
-            let mut cmd = std::process::Command::new("pkexec");
-            cmd.arg(exec_path).arg("--config").arg(path);
-            cmd.stdout(Stdio::null()); // Mute stdout
-            if prefs.enable_debug_log {
-                if let Ok(file) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open("gephgui.log")
-                {
-                    cmd.stderr(Stdio::from(file));
-                } else {
-                    cmd.stderr(Stdio::piped());
-                }
-            } else {
-                cmd.stderr(Stdio::null());
-            }
-            let mut child = cmd.spawn()?;
-            std::thread::spawn(move || {
-                let mut buf = String::new();
-                if let Some(mut stderr) = child.stderr.take() {
-                    stderr.read_to_string(&mut buf).ok();
-                }
-                let _ = child.wait();
-                let _ = sender.send(buf);
-            });
-        }
-        #[cfg(target_os = "windows")]
-        {
-            let mut cmd = runas::Command::new(std::env::current_exe().unwrap());
-            cmd.arg("--config").arg(path);
-            cmd.show(false);
-            std::thread::spawn(move || {
-                let _ = cmd.status();
-                let _ = sender.send(String::new());
-            });
+            cmd.stderr(Stdio::from(file));
+        } else {
+            cmd.stderr(Stdio::piped());
         }
     } else {
-        let mut cmd = Command::new(std::env::current_exe().unwrap());
-        cmd.arg("--config").arg(path);
-        #[cfg(windows)]
-        cmd.creation_flags(0x08000000);
-        cmd.stdout(Stdio::null()); // Mute stdout
-        if prefs.enable_debug_log {
-            if let Ok(file) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("gephgui.log")
-            {
-                cmd.stderr(Stdio::from(file));
-            } else {
-                cmd.stderr(Stdio::piped());
-            }
-        } else {
-            cmd.stderr(Stdio::null());
-        }
-        let mut child = cmd.spawn()?;
-        std::thread::spawn(move || {
-            let mut buf = String::new();
-            if let Some(mut stderr) = child.stderr.take() {
-                stderr.read_to_string(&mut buf).ok();
-            }
-            let _ = child.wait();
-            let _ = sender.send(buf);
-        });
+        cmd.stderr(Stdio::null());
     }
+    let mut child = cmd.spawn()?;
+    std::thread::spawn(move || {
+        let mut buf = String::new();
+        if let Some(mut stderr) = child.stderr.take() {
+            stderr.read_to_string(&mut buf).ok();
+        }
+        let _ = child.wait();
+        let _ = sender.send(buf);
+    });
 
     Ok(receiver)
 }
@@ -195,7 +138,7 @@ pub async fn daemon_rpc(inner: JrpcRequest) -> anyhow::Result<JrpcResponse> {
         .await
     {
         Some(Ok(resp)) => Ok(resp),
-        Some(Err(err)) => {
+        Some(Err(_err)) => {
             // tracing::warn!(
             //     method = debug(&inner.method),
             //     err = debug(err),
@@ -273,7 +216,6 @@ pub fn clear_conn_token_cache() {
 pub fn running_cfg(prefs: &TuiPrefs) -> geph5_client::Config {
     let mut cfg = default_config();
 
-    cfg.vpn = prefs.global_vpn;
     cfg.passthrough_china = false;
     cfg.credentials = geph5_broker_protocol::Credential::Secret(prefs.secret.clone());
     let listen_ip = if prefs.listen_all {

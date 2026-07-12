@@ -15,7 +15,7 @@ set -euo pipefail
 #   manual    -> ./mikuclub_<VERSION>_<ARCH>.deb
 #
 
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")") && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 REPO_ROOT="$SCRIPT_DIR"
 
 # ── Utility functions ───────────────────────────────────
@@ -28,7 +28,7 @@ MODE="cargo-deb"
 INSTALL=false
 CARGO_DEB_EXTRA_ARGS=()
 
-for arg in "${@:-}"; do
+for arg in "$@"; do
     case "$arg" in
         --manual)      MODE="manual" ;;
         --install)     INSTALL=true ;;
@@ -54,7 +54,7 @@ if [ "$MODE" = "cargo-deb" ]; then
     info "Building deb via cargo-deb ..."
     cargo deb --manifest-path "$REPO_ROOT/Cargo.toml" "${CARGO_DEB_EXTRA_ARGS[@]}"
 
-    OUTPUT="$(ls -t "$REPO_ROOT/target/debian/"mikuclub_*.deb 2>/dev/null | head -1)"
+    OUTPUT="$(ls -t "$REPO_ROOT/target/debian/mikuclub_"*.deb 2>/dev/null | head -1)"
     [ -f "$OUTPUT" ] || die "deb not found in target/debian/"
 
     if $INSTALL; then
@@ -85,7 +85,7 @@ CTL_NAME="mikuctl"
 PREFIX="/usr/local"
 DEST_DIR="${STAGING_DIR}${PREFIX}"
 DEST_BIN="${DEST_DIR}/bin"
-WORKSPACE_VERSION="1.0.0"
+WORKSPACE_VERSION="1.1.0"
 
 # Still need to compile (in manual mode)
 info "Compiling (release)..."
@@ -95,7 +95,7 @@ cargo build --release --manifest-path "$REPO_ROOT/Cargo.toml" \
 BINARY_SRC="$REPO_ROOT/target/release/gephgui-tui"
 [ -f "$BINARY_SRC" ] || die "Binary not found: $BINARY_SRC"
 
-VERSION="$(grep -A1 '^\[workspace.package\]' "$REPO_ROOT/Cargo.toml" \
+VERSION="$(grep -A2 '^\[package\]' "$REPO_ROOT/Cargo.toml" \
          | grep 'version' | sed 's/.*version = "\(.*\)".*/\1/' || echo "$WORKSPACE_VERSION")"
 
 ARCH="$(uname -m)"

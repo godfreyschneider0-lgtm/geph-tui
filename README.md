@@ -64,7 +64,7 @@ gephgui-tui: ELF shared object, 64-bit LSB arm64, dynamic (/system/bin/linker64)
 - `s` / `x`: Start / stop VPN
 - `q`: Quit application
 - `e`, `p`, `h`: Edit Account ID, SOCKS5 port, HTTP port (in the Config tab)
-- `v`, `l`, `b`: Toggle VPN mode / listen-all-interfaces / direct-vs-bridged
+- `v`, `l`, `b`: Toggle listen-all-interfaces / direct-vs-bridged
 - `r`: Register a new account
 - In the **Regions** tab: `Up`/`Down` to move, `Enter` to select a region, `a` for Auto
   (the specific exit node within a region is chosen automatically)

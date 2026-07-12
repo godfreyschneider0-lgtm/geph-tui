@@ -3,7 +3,7 @@
 use std::{
     fs,
     io::ErrorKind,
-    path::{Path, PathBuf},
+    path::PathBuf,
     time::Duration,
 };
 

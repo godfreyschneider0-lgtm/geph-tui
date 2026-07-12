@@ -3,7 +3,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Paragraph, Wrap},
 };
 
 use crate::state::AppState;
@@ -103,6 +103,47 @@ pub fn draw(f: &mut ratatui::Frame, state: &mut AppState<'_>, area: Rect) {
         )));
     }
 
-    let p = Paragraph::new(lines).block(Block::default().title("Status").borders(Borders::ALL));
+    for item in &state.news_items {
+        lines.push(Line::from(""));
+        if item.important {
+            lines.push(Line::from(Span::styled(
+                format!("[!] {}", item.title),
+                Style::default().fg(Color::Red),
+            )));
+        } else {
+            lines.push(Line::from(Span::styled(
+                format!("[*] {}", item.title),
+                Style::default().fg(Color::Cyan),
+            )));
+        }
+        for content_line in item.contents.lines() {
+            lines.push(Line::from(Span::styled(
+                content_line.to_string(),
+                Style::default().fg(Color::Gray),
+            )));
+        }
+    }
+
+    let inner_height = area.height.saturating_sub(2) as usize;
+    let content_width = area.width.saturating_sub(2) as usize;
+
+    let wrapped_count: usize = lines
+        .iter()
+        .map(|line| (line.width() + content_width.max(1) - 1) / content_width.max(1))
+        .sum();
+
+    let max_scroll = wrapped_count.saturating_sub(inner_height) as u16;
+    if state.status_scroll > max_scroll {
+        state.status_scroll = max_scroll;
+    }
+
+    let p = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .scroll((state.status_scroll, 0))
+        .block(
+            Block::default()
+                .title("Status (j/k to scroll)")
+                .borders(Borders::ALL),
+        );
     f.render_widget(p, area);
 }

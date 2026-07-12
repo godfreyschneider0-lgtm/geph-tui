@@ -57,7 +57,7 @@ fn main() -> anyhow::Result<()> {
             println!("    s/x   start / stop connection");
             println!("    e     edit Account ID      p  edit SOCKS5 port      h  edit HTTP port");
             println!(
-                "    v     toggle VPN mode      l  toggle listen-all      b  toggle direct/bridged"
+                "    l     toggle listen-all      b  toggle direct/bridged"
             );
             println!("    r     register a new account");
             println!("    q     quit");
@@ -98,7 +98,6 @@ fn main() -> anyhow::Result<()> {
         } else {
             "Bridged"
         };
-        let vpn_mode = if prefs.global_vpn { "ON" } else { "OFF" };
         let listen_all_str = if prefs.listen_all { "ON" } else { "OFF" };
         let exit_display = match &prefs.selected_country {
             Some(cc) => match CountryCode::for_alpha2(cc) {
@@ -112,7 +111,6 @@ fn main() -> anyhow::Result<()> {
         println!("==================================");
         println!("Account ID:    {}", prefs.secret);
         println!("Connection:    {}", connection);
-        println!("VPN Mode:      {}", vpn_mode);
         println!("Listen all:    {}", listen_all_str);
         println!("SOCKS5:        {}:{}", listen_ip, socks5_port);
         println!("HTTP Proxy:    {}:{}", listen_ip, http_proxy_port);
@@ -268,6 +266,22 @@ async fn run_app<B: Backend>(
                 })
                 .collect();
             state.countries.sort_by_key(|c| c.alpha2().to_string());
+        }
+
+        if state.news_items.is_empty() && state.is_running {
+            let lang = if sys_locale::get_locale()
+                .unwrap_or_default()
+                .contains("zh")
+            {
+                "zh"
+            } else {
+                "en"
+            };
+            if let Ok(Ok(news)) =
+                ControlClient(DaemonRpcTransport).latest_news(lang.to_string()).await
+            {
+                state.news_items = news;
+            }
         }
 
         // Poll registration

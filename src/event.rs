@@ -90,9 +90,7 @@ pub async fn handle_global_key<'a>(state: &mut AppState<'a>, key: KeyEvent) -> b
                 Err(_) => {}
             }
         }
-        KeyCode::Char('v') if state.tab == TabIdx::Config => {
-            state.global_vpn = !state.global_vpn;
-        }
+
         KeyCode::Char('l') if state.tab == TabIdx::Config => {
             state.listen_all = !state.listen_all;
         }
@@ -134,6 +132,12 @@ pub async fn handle_global_key<'a>(state: &mut AppState<'a>, key: KeyEvent) -> b
         }
         KeyCode::Char('a') if state.tab == TabIdx::Nodes => {
             state.selected_country = None;
+        }
+        KeyCode::Char('j') if state.tab == TabIdx::Status => {
+            state.status_scroll = state.status_scroll.saturating_add(1);
+        }
+        KeyCode::Char('k') if state.tab == TabIdx::Status => {
+            state.status_scroll = state.status_scroll.saturating_sub(1);
         }
         KeyCode::Up if state.tab == TabIdx::Debug => {
             state.debug_scroll = state.debug_scroll.saturating_sub(1);
