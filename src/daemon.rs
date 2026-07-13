@@ -291,6 +291,7 @@ pub fn running_cfg(prefs: &TuiPrefs) -> Config {
     let http_proxy_port: u16 = prefs.http_port.parse().unwrap_or(9910);
     cfg.socks5_listen = Some(SocketAddr::new(listen_ip, socks5_port));
     cfg.http_proxy_listen = Some(SocketAddr::new(listen_ip, http_proxy_port));
+    cfg.pac_listen = Some(SocketAddr::new(listen_ip, 12223));
 
     cfg.exit_constraint = match &prefs.selected_country {
         Some(cc) => {

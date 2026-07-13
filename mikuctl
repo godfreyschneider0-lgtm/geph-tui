@@ -44,6 +44,8 @@ do_status() {
     exit_node="$(echo "$out" | grep '^exit=' | cut -d= -f2-)"
     socks5="$(echo "$out" | grep '^socks5_port=' | cut -d= -f2-)"
     http="$(echo "$out" | grep '^http_port=' | cut -d= -f2-)"
+    listen_addr="$(echo "$out" | grep '^listen_addr=' | cut -d= -f2-)"
+    : "${listen_addr:=127.0.0.1}"
 
     echo "Binary:   $PROG"
     echo "Running:  ${running}"
@@ -51,8 +53,8 @@ do_status() {
         echo "Conn:     ${conn:-unknown}"
         [ -n "$exit_node" ] && echo "Exit:     $exit_node"
     fi
-    echo "SOCKS5:   127.0.0.1:${socks5:-$SOCKS_PORT} $(port_listening "${socks5:-$SOCKS_PORT}" && echo '(LISTEN)' || echo '(not listening)')"
-    echo "HTTP:     127.0.0.1:${http:-$HTTP_PORT} $(port_listening "${http:-$HTTP_PORT}" && echo '(LISTEN)' || echo '(not listening)')"
+    echo "SOCKS5:   ${listen_addr}:${socks5:-$SOCKS_PORT} $(port_listening "${socks5:-$SOCKS_PORT}" && echo '(LISTEN)' || echo '(not listening)')"
+    echo "HTTP:     ${listen_addr}:${http:-$HTTP_PORT} $(port_listening "${http:-$HTTP_PORT}" && echo '(LISTEN)' || echo '(not listening)')"
     if [ -f "$LOG_FILE" ]; then
         local size
         size=$(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0)

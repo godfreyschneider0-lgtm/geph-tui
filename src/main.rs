@@ -330,11 +330,17 @@ async fn ctl_status() -> anyhow::Result<()> {
     let prefs = TuiPrefs::load();
     let socks5 = prefs.socks_port;
     let http = prefs.http_port;
+    let listen_addr = if prefs.listen_all {
+        "0.0.0.0"
+    } else {
+        "127.0.0.1"
+    };
 
     if !daemon_running().await {
         println!("running=no");
         println!("socks5_port={socks5}");
         println!("http_port={http}");
+        println!("listen_addr={listen_addr}");
         return Ok(());
     }
 
@@ -353,6 +359,7 @@ async fn ctl_status() -> anyhow::Result<()> {
     println!("conn={state}");
     println!("socks5_port={socks5}");
     println!("http_port={http}");
+    println!("listen_addr={listen_addr}");
 
     if let ConnInfo::Connected { sessions } = &conn {
         if let Some(s) = sessions.first() {

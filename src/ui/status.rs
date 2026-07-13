@@ -41,6 +41,15 @@ pub fn draw(f: &mut ratatui::Frame, state: &mut AppState<'_>, area: Rect) {
             state.selected_country.as_deref().unwrap_or("Auto"),
             Style::default().fg(Color::Cyan),
         ),
+        Span::raw(" | Listen: "),
+        Span::styled(
+            if state.listen_all { "0.0.0.0" } else { "127.0.0.1" },
+            if state.listen_all {
+                Style::default().fg(Color::Magenta)
+            } else {
+                Style::default().fg(Color::Gray)
+            },
+        ),
     ])];
 
     if let Some((version, path)) = &state.update_info {
