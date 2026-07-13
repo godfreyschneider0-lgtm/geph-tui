@@ -1,205 +1,85 @@
 #!/bin/bash
+set -euo pipefail
 
 CTL_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 PROG="${MIKU_BIN:-${CTL_DIR}/MikuClub}"
-RUN_MODE="--daemon"
-MAX_LOG_SIZE=$((5 * 1024 * 1024))
-STOP_SIGNAL="TERM"
-SOCKS_PORT="9909"
-HTTP_PORT="9910"
-
-BASE_DIR="${MIKU_HOME:-${TMPDIR:-/tmp}/miku}"
-PID_FILE="${BASE_DIR}/miku.pid"
-FIFO="${BASE_DIR}/miku.fifo"
-LOG_FILE="${BASE_DIR}/miku.log"
-WRITER_PID_FILE="${BASE_DIR}/.logwriter.pid"
+LOG_FILE="${MIKU_LOG:-${TMPDIR:-/tmp}/miku/miku.log}"
+SOCKS_PORT="${MIKU_SOCKS_PORT:-9909}"
+HTTP_PORT="${MIKU_HTTP_PORT:-9910}"
 
 usage() {
     cat <<EOF
-Usage: $0 {start|stop|status|log|restart} [args...]
+Usage: $0 {start|stop|status|log|restart}
 
 Commands:
-  start    Start MikuClub daemon ($RUN_MODE)
-  stop     Stop MikuClub
-  status   Show status / PID / ports / log path
-  log      Tail log (tail -f, Ctrl+C to exit)
-  restart  Restart
+  start    Start the daemon (geph5-client subprocess)
+  stop     Stop the daemon
+  status   Show daemon status
+  log      Tail log (Ctrl+C to exit)
+  restart  Stop then start
 
 Environment:
-  MIKU_BIN   Binary path (default: $PROG)
-  MIKU_HOME  Working directory (default: $BASE_DIR)
-
-Examples:
-  $0 start
-  $0 start --config /path/to/cfg.yaml
-  $0 status
-  $0 log
-  $0 stop
+  MIKU_BIN        MikuClub binary path (default: $PROG)
+  MIKU_LOG        Log file path (default: $LOG_FILE)
+  MIKU_SOCKS_PORT SOCKS5 port (default: $SOCKS_PORT)
+  MIKU_HTTP_PORT  HTTP proxy port (default: $HTTP_PORT)
 EOF
     exit 1
 }
 
-prog_name() { basename "$PROG"; }
-
-is_running() {
-    local pid="$1"
-    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
-}
-
-log_writer() {
-    local fifo="$1" logfile="$2" maxsize="$3" keep size
-    keep=$(( maxsize / 2 ))
-    touch "$logfile"
-    while IFS= read -r line; do
-        printf '%s\n' "$line" >> "$logfile"
-        size=$(stat -c%s "$logfile" 2>/dev/null || echo 0)
-        if [ "$size" -ge "$maxsize" ]; then
-            tail -c "$keep" "$logfile" > "${logfile}.swp" 2>/dev/null \
-                && cat "${logfile}.swp" > "$logfile"
-            rm -f "${logfile}.swp"
-        fi
-    done < "$fifo"
-}
-
 port_listening() {
-    local port="$1"
-    (exec 3<>/dev/tcp/127.0.0.1/$port) 2>/dev/null
+    (exec 3<>/dev/tcp/127.0.0.1/$1) 2>/dev/null
 }
 
-ensure_dirs() {
-    mkdir -p "$BASE_DIR"
-}
-
-do_start() {
-    if [ ! -x "$PROG" ]; then
-        echo "Error: not found or not executable: $PROG" >&2
-        exit 1
-    fi
-    ensure_dirs
-
-    if [ -f "$PID_FILE" ]; then
-        OLD_PID=$(cat "$PID_FILE" 2>/dev/null)
-        if is_running "$OLD_PID"; then
-            echo "Error: $(prog_name) is already running (PID ${OLD_PID})"
-            exit 1
-        else
-            echo "Warning: stale PID file will be overwritten"
-            rm -f "$PID_FILE" "$WRITER_PID_FILE"
-        fi
-    fi
-
-    rm -f "$FIFO"
-    mkfifo "$FIFO" || { echo "Error: cannot create FIFO: $FIFO" >&2; exit 1; }
-
-    log_writer "$FIFO" "$LOG_FILE" "$MAX_LOG_SIZE" &
-    WRITER_PID=$!
-    echo "$WRITER_PID" > "$WRITER_PID_FILE"
-
-    setsid "$PROG" $RUN_MODE "$@" > "$FIFO" 2>&1 < /dev/null &
-    NEW_PID=$!
-    echo "$NEW_PID" > "$PID_FILE"
-
-    sleep 1
-    if is_running "$NEW_PID"; then
-        echo "Started $(prog_name) (PID ${NEW_PID})"
-    else
-        echo "Warning: process exited immediately, check log: $LOG_FILE" >&2
-        rm -f "$PID_FILE" "$WRITER_PID_FILE"
-        exit 1
-    fi
-    echo "Dir: ${BASE_DIR}"
-    echo "Log: ${LOG_FILE} (max ${MAX_LOG_SIZE} bytes)"
-}
-
-do_stop() {
-    if [ ! -f "$PID_FILE" ]; then
-        [ "${MIKU_QUIET:-0}" = 1 ] || echo "PID file not found, $(prog_name) may not be running"
-        rm -f "$FIFO"
-        return 1
-    fi
-
-    PID=$(cat "$PID_FILE" 2>/dev/null)
-    if is_running "$PID"; then
-        echo "Stopping $(prog_name) (PID ${PID})..."
-        kill -s "$STOP_SIGNAL" "$PID"
-        for i in 1 2 3 4 5; do
-            sleep 1
-            is_running "$PID" || break
-        done
-        if is_running "$PID"; then
-            echo "Process not responding, force killing..."
-            kill -9 "$PID" 2>/dev/null
-        fi
-        WPID=$(cat "$WRITER_PID_FILE" 2>/dev/null)
-        [ -n "$WPID" ] && kill "$WPID" 2>/dev/null
-        rm -f "$PID_FILE" "$WRITER_PID_FILE" "$FIFO"
-        echo "$(prog_name) stopped"
-    else
-        echo "Process gone (PID ${PID}), cleaning PID file"
-        rm -f "$PID_FILE" "$WRITER_PID_FILE" "$FIFO"
-    fi
-    return 0
-}
+do_start()   { "$PROG" --ctl start; }
+do_stop()    { "$PROG" --ctl stop; }
 
 do_status() {
-    NAME=$(prog_name)
-    echo "Program:  ${NAME}"
-    echo "Binary:   ${PROG}"
-    echo "Work dir: ${BASE_DIR}"
+    local out
+    out="$("$PROG" --ctl status)"
 
-    if [ -f "$PID_FILE" ]; then
-        PID=$(cat "$PID_FILE" 2>/dev/null)
-        if is_running "$PID"; then
-            echo "Status:   Running"
-            echo "PID:      ${PID}"
-            ps -o pid=,etime=,rss=,args= -p "$PID" 2>/dev/null \
-                | awk '{printf "Details:  PID=%s uptime=%s RSS=%sKB\n          cmd=%s\n", $1,$2,$3,$4}'
-            if port_listening "$SOCKS_PORT"; then
-                echo "SOCKS5:   127.0.0.1:${SOCKS_PORT} (LISTEN)"
-            else
-                echo "SOCKS5:   127.0.0.1:${SOCKS_PORT} (not listening)"
-            fi
-            if port_listening "$HTTP_PORT"; then
-                echo "HTTP:     127.0.0.1:${HTTP_PORT} (LISTEN)"
-            else
-                echo "HTTP:     127.0.0.1:${HTTP_PORT} (not listening)"
-            fi
-            echo "Log file: ${LOG_FILE}"
-            if [ -f "$LOG_FILE" ]; then
-                SIZE=$(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0)
-                echo "Log size: ${SIZE} / ${MAX_LOG_SIZE} bytes"
-            fi
-        else
-            echo "Status:   Not running (stale PID file)"
-            echo "Stale PID: ${PID}"
-        fi
-    else
-        echo "Status:   Not running"
-        if [ -d "$BASE_DIR" ]; then
-            echo "Note:     working directory exists but no running process"
-        fi
+    local running conn exit_node
+    running="$(echo "$out" | grep '^running=' | cut -d= -f2)"
+    conn="$(echo "$out" | grep '^conn=' | cut -d= -f2-)"
+    exit_node="$(echo "$out" | grep '^exit=' | cut -d= -f2-)"
+    socks5="$(echo "$out" | grep '^socks5_port=' | cut -d= -f2-)"
+    http="$(echo "$out" | grep '^http_port=' | cut -d= -f2-)"
+
+    echo "Binary:   $PROG"
+    echo "Running:  ${running}"
+    if [ "$running" = "yes" ]; then
+        echo "Conn:     ${conn:-unknown}"
+        [ -n "$exit_node" ] && echo "Exit:     $exit_node"
+    fi
+    echo "SOCKS5:   127.0.0.1:${socks5:-$SOCKS_PORT} $(port_listening "${socks5:-$SOCKS_PORT}" && echo '(LISTEN)' || echo '(not listening)')"
+    echo "HTTP:     127.0.0.1:${http:-$HTTP_PORT} $(port_listening "${http:-$HTTP_PORT}" && echo '(LISTEN)' || echo '(not listening)')"
+    if [ -f "$LOG_FILE" ]; then
+        local size
+        size=$(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0)
+        echo "Log:      $LOG_FILE (${size} bytes)"
     fi
 }
 
 do_log() {
     if [ -f "$LOG_FILE" ]; then
-        echo "Live log (Ctrl+C to exit): ${LOG_FILE}"
+        echo "Live log (Ctrl+C to exit): $LOG_FILE"
         tail -n 50 -f "$LOG_FILE"
     else
-        echo "Log file not found: ${LOG_FILE}" >&2
+        echo "Log file not found: $LOG_FILE" >&2
         exit 1
     fi
 }
 
 CMD="$1"
-[ -n "$CMD" ] && shift
+[ -n "$CMD" ] || usage
+shift || true
 
 case "$CMD" in
-    start)   do_start "$@" ;;
-    stop)    do_stop; exit $? ;;
+    start)   do_start ;;
+    stop)    do_stop ;;
     status)  do_status ;;
     log)     do_log ;;
-    restart) MIKU_QUIET=1 do_stop; sleep 1; do_start "$@" ;;
+    restart) do_stop || true; sleep 1; do_start ;;
     ""|-h|--help|help) usage ;;
     *) echo "Unknown command: $CMD" >&2; usage ;;
 esac

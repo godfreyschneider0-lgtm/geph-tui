@@ -6,7 +6,7 @@ Architecture: %%ARCH%%
 Maintainer: godfreyschneider0-lgtm <godfreyschneider0@lgtm.dev>
 Description: TUI client for Geph 5 (MikuClub)
  A lightweight terminal user interface client for the Geph 5 VPN service.
- Provides SOCKS5/HTTP proxy and TUN VPN modes with an interactive TUI.
+ Provides SOCKS5/HTTP proxy with an interactive TUI.
  .
  Daemon management via the bundled mikuctl command:
    mikuctl start|stop|restart|status|log

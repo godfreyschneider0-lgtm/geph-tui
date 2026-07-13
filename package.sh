@@ -5,10 +5,12 @@ set -euo pipefail
 # package.sh — Build MikuClub .deb packages (Linux)
 #
 # Usage:
-#   ./package.sh                # Default: cargo deb (auto-compile + package)
-#   ./package.sh --skip-build    # cargo deb --no-build (use existing binary)
-#   ./package.sh --manual       # Manual dpkg-deb (uses package/DEBIAN/ templates)
-#   ./package.sh --install      # Install immediately after build
+#   ./package.sh                     # Default: cargo deb (native amd64)
+#   ./package.sh --manual            # Manual dpkg-deb (uses package/DEBIAN/ templates)
+#   ./package.sh --arm64             # Cross-compile for aarch64
+#   ./package.sh --manual --arm64    # Manual arm64 build
+#   ./package.sh --skip-build        # cargo deb --no-build (use existing binary)
+#   ./package.sh --install           # Install immediately after build
 #
 # Output:
 #   cargo-deb -> target/debian/mikuclub_<VERSION>_<ARCH>.deb
@@ -26,18 +28,21 @@ die()  { printf '\033[1;31m[ERR]\033[0m  %s\n' "$*" >&2; exit 1; }
 # ── Argument parsing ───────────────────────────────────
 MODE="cargo-deb"
 INSTALL=false
+ARM64=false
 CARGO_DEB_EXTRA_ARGS=()
 
 for arg in "$@"; do
     case "$arg" in
         --manual)      MODE="manual" ;;
+        --arm64)       ARM64=true ;;
         --install)     INSTALL=true ;;
         --skip-build)  CARGO_DEB_EXTRA_ARGS+=("--no-build") ;;
         --help|-h)     cat <<EOF
 Usage: $0 [options]
 
-  (default)      cargo deb build (Linux)
+  (default)      cargo deb build (native amd64)
   --manual       Manual dpkg-deb (uses package/DEBIAN/ templates)
+  --arm64        Cross-compile for aarch64 (aarch64-unknown-linux-gnu)
   --skip-build   Skip compilation
   --install      Install immediately after build (dpkg -i)
 EOF
@@ -46,16 +51,39 @@ EOF
     esac
 done
 
+# ── Target setup ────────────────────────────────────────
+if $ARM64; then
+    TARGET="aarch64-unknown-linux-gnu"
+    ARCH="arm64"
+    TARGET_FLAG=(--target "$TARGET")
+    TARGET_DIR="$TARGET"
+    info "Cross-compiling for arm64 ($TARGET)"
+    command -v aarch64-linux-gnu-gcc >/dev/null 2>&1 \
+        || die "aarch64 cross-compiler not found. Install: sudo apt install gcc-aarch64-linux-gnu"
+    export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+else
+    TARGET=""
+    ARCH="$(uname -m)"
+    case "$ARCH" in x86_64|amd64) ARCH="amd64" ;; aarch64|arm64) ARCH="arm64" ;; esac
+    TARGET_FLAG=()
+    TARGET_DIR="."
+fi
+
 # ── cargo-deb mode ─────────────────────────────────────
 if [ "$MODE" = "cargo-deb" ]; then
     command -v cargo-deb >/dev/null 2>&1 \
         || die "cargo-deb not found. Install: cargo install cargo-deb"
 
-    info "Building deb via cargo-deb ..."
-    cargo deb --manifest-path "$REPO_ROOT/Cargo.toml" "${CARGO_DEB_EXTRA_ARGS[@]}"
+    info "Pre-building geph5-client (with aws_lambda)..."
+    cargo build --release -p geph5-client --features aws_lambda \
+        --manifest-path "$REPO_ROOT/Cargo.toml" "${TARGET_FLAG[@]}" \
+        || die "geph5-client build failed"
 
-    OUTPUT="$(ls -t "$REPO_ROOT/target/debian/mikuclub_"*.deb 2>/dev/null | head -1)"
-    [ -f "$OUTPUT" ] || die "deb not found in target/debian/"
+    info "Building deb via cargo-deb ..."
+    cargo deb --manifest-path "$REPO_ROOT/Cargo.toml" "${CARGO_DEB_EXTRA_ARGS[@]}" "${TARGET_FLAG[@]}"
+
+    OUTPUT="$(ls -t "$REPO_ROOT/target/debian/mikuclub_"*"_${ARCH}.deb" 2>/dev/null | head -1)"
+    [ -f "$OUTPUT" ] || die "deb not found in target/debian/ for arch ${ARCH}"
 
     if $INSTALL; then
         info "Installing ${OUTPUT##*/} ..."
@@ -85,27 +113,34 @@ CTL_NAME="mikuctl"
 PREFIX="/usr/local"
 DEST_DIR="${STAGING_DIR}${PREFIX}"
 DEST_BIN="${DEST_DIR}/bin"
-WORKSPACE_VERSION="1.1.0"
+WORKSPACE_VERSION="2.0.0"
 
-# Still need to compile (in manual mode)
-info "Compiling (release)..."
-cargo build --release --manifest-path "$REPO_ROOT/Cargo.toml" \
+RELEASE_DIR="$REPO_ROOT/target/${TARGET_DIR}/release"
+
+info "Compiling TUI (release)..."
+cargo build --release -p gephgui-tui --manifest-path "$REPO_ROOT/Cargo.toml" "${TARGET_FLAG[@]}" \
     || die "cargo build failed"
 
-BINARY_SRC="$REPO_ROOT/target/release/gephgui-tui"
+info "Compiling geph5-client (release, aws_lambda)..."
+cargo build --release -p geph5-client --features aws_lambda \
+    --manifest-path "$REPO_ROOT/Cargo.toml" "${TARGET_FLAG[@]}" \
+    || die "geph5-client build failed"
+
+BINARY_SRC="$RELEASE_DIR/gephgui-tui"
 [ -f "$BINARY_SRC" ] || die "Binary not found: $BINARY_SRC"
+
+ENGINE_SRC="$RELEASE_DIR/geph5-client"
+[ -f "$ENGINE_SRC" ] || die "Engine binary not found: $ENGINE_SRC"
 
 VERSION="$(grep -A2 '^\[package\]' "$REPO_ROOT/Cargo.toml" \
          | grep 'version' | sed 's/.*version = "\(.*\)".*/\1/' || echo "$WORKSPACE_VERSION")"
 
-ARCH="$(uname -m)"
-case "$ARCH" in x86_64|amd64) ARCH="amd64" ;; aarch64|arm64) ARCH="arm64" ;; esac
-
 info "Assembling package: ${PACKAGE_NAME} ${VERSION} (${ARCH})"
 mkdir -p "$DEST_BIN"
 cp "$BINARY_SRC" "${DEST_BIN}/${BINARY_NAME}"
+cp "$ENGINE_SRC" "${DEST_BIN}/geph5-client"
 cp "$REPO_ROOT/mikuctl" "${DEST_BIN}/${CTL_NAME}"
-chmod 755 "${DEST_BIN}/${BINARY_NAME}" "${DEST_BIN}/${CTL_NAME}"
+chmod 755 "${DEST_BIN}/${BINARY_NAME}" "${DEST_BIN}/geph5-client" "${DEST_BIN}/${CTL_NAME}"
 
 mkdir -p "${STAGING_DIR}/DEBIAN"
 cp "$REPO_ROOT/package/DEBIAN/control.template" "${STAGING_DIR}/DEBIAN/control"

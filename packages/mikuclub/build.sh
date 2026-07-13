@@ -2,7 +2,7 @@ TERMUX_PKG_HOMEPAGE=https://github.com/godfreyschneider0-lgtm/gephgui-tui
 TERMUX_PKG_DESCRIPTION="TUI client for Geph 5 (MikuClub)"
 TERMUX_PKG_LICENSE="MPL-2.0"
 TERMUX_PKG_MAINTAINER="@godfreyschneider0-lgtm"
-TERMUX_PKG_VERSION="1.1.0"
+TERMUX_PKG_VERSION="2.0.0"
 TERMUX_PKG_SRCURL=https://github.com/godfreyschneider0-lgtm/gephgui-tui.git
 TERMUX_PKG_GIT_BRANCH="main"
 TERMUX_PKG_BUILD_IN_SRC=true
@@ -21,13 +21,19 @@ termux_step_pre_configure() {
 termux_step_make() {
     cd "$TERMUX_PKG_SRCDIR"
     cargo build --jobs "$TERMUX_PKG_MAKE_PROCESSES" --release \
-        --target "$CARGO_TARGET_NAME"
+        --target "$CARGO_TARGET_NAME" -p gephgui-tui
+    cargo build --jobs "$TERMUX_PKG_MAKE_PROCESSES" --release \
+        --target "$CARGO_TARGET_NAME" -p geph5-client --features aws_lambda
 }
 
 termux_step_make_install() {
     install -Dm700 \
         "$TERMUX_PKG_SRCDIR/target/${CARGO_TARGET_NAME}/release/gephgui-tui" \
         "$TERMUX_PREFIX/bin/MikuClub"
+
+    install -Dm700 \
+        "$TERMUX_PKG_SRCDIR/target/${CARGO_TARGET_NAME}/release/geph5-client" \
+        "$TERMUX_PREFIX/bin/geph5-client"
 
     install -Dm700 \
         "$TERMUX_PKG_SRCDIR/mikuctl" \
