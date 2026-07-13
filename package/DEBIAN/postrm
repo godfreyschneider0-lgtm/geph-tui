@@ -5,12 +5,13 @@ set -e
 
 case "$1" in
     purge)
-        # Remove user config
-        rm -f ~/.config/geph5_tui_prefs.json
-        # Remove connection cache
-        rm -rf ~/.cache/geph5_tui/
-        # Remove auto-update downloads
-        rm -rf ~/.cache/geph5-dl/
+        # Remove config/cache for each real user (runs as root, so ~ is /root)
+        while IFS=: read -r user _ uid _ _ home _; do
+            [ "$uid" -ge 1000 ] 2>/dev/null || continue
+            [ -d "$home" ] || continue
+            rm -f "$home/.config/geph5_tui_prefs.json"
+            rm -rf "$home/.cache/geph5_tui/" "$home/.cache/geph5-dl/"
+        done < /etc/passwd
         # Remove daemon runtime directory
         rm -rf "${TMPDIR:-/tmp}/miku/"
         ;;
