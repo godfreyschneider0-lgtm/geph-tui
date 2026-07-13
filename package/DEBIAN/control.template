@@ -1,10 +1,10 @@
-Package: mikuclub
+Package: geph-tui
 Version: %%VERSION%%
 Section: net
 Priority: optional
 Architecture: %%ARCH%%
 Maintainer: godfreyschneider0-lgtm <godfreyschneider0@lgtm.dev>
-Description: TUI client for Geph 5 (MikuClub)
+Description: Lightweight TUI client for Geph 5
  A lightweight terminal user interface client for the Geph 5 proxy service.
  Provides SOCKS5/HTTP proxy with an interactive TUI.
  .

@@ -35,11 +35,11 @@ fn main() -> anyhow::Result<()> {
     match args.get(1).map(|s| s.as_str()) {
         Some("-h") | Some("--help") => {
             println!(
-                "gephgui-tui {} — Geph5 client (TUI + headless daemon)\n",
+                "geph-tui {} — lightweight Geph5 client (TUI + headless daemon)\n",
                 env!("CARGO_PKG_VERSION")
             );
             println!("USAGE:");
-            println!("    gephgui-tui [MODE] [ARGS]\n");
+            println!("    geph-tui [MODE] [ARGS]\n");
             println!("MODES:");
             println!("    (none)            Interactive TUI (default). Configure account, region,");
             println!("                      ports; press 's' to connect, 'q' to quit.");
@@ -71,7 +71,7 @@ fn main() -> anyhow::Result<()> {
                 "stop" => ctl_stop().await,
                 "status" => ctl_status().await,
                 _ => {
-                    eprintln!("Usage: MikuClub --ctl start|stop|status");
+                    eprintln!("Usage: geph-tui --ctl start|stop|status");
                     std::process::exit(1);
                 }
             }

@@ -1,6 +1,28 @@
-# gephgui-tui (formerly [gephgui-wry](https://github.com/geph-official/gephgui-wry))
+# geph-tui
 
-This is the terminal user interface (TUI) client for Geph 5. It was previously a Webview-based GUI (`gephgui-wry`), but has been rewritten as a lightweight, cross-platform terminal app.
+A lightweight terminal UI client for the [Geph 5](https://geph.io/) proxy service. Provides SOCKS5 and HTTP proxy with an interactive TUI for configuration, node selection, and connection management.
+
+Powered by [geph-lite](https://github.com/godfreyschneider0-lgtm/geph-lite) — a smol-runtime fork of the geph5 engine that idles at **40–60 MB RSS**.
+
+## Architecture
+
+```
+┌─────────────────────────────┐
+│  geph-tui process (smol)     │
+│  - ratatui rendering          │
+│  - keyboard events (crossterm)│
+│  - TCP RPC client (nanorpc)   │
+└──────────┬──────────────────┘
+           │ TCP 127.0.0.1:12222
+┌──────────▼──────────────────┐
+│  geph5-client subprocess     │
+│  - smol single-threaded       │
+│  - sosistab3 / picomux        │
+│  - SOCKS5 / HTTP proxy        │
+└─────────────────────────────┘
+```
+
+The TUI is a **thin shell** — it does not link the engine as a library. It drives a separate `geph5-client` subprocess over TCP RPC. Communication uses `nanorpc` (line-delimited JSON-RPC).
 
 ## Requirements
 
@@ -8,134 +30,97 @@ This is the terminal user interface (TUI) client for Geph 5. It was previously a
 
 ## Compilation
 
-Since this is now a pure Rust TUI application, building it is very straightforward:
-
-```shell
-git clone ...
-cd gephgui-tui
-cargo build --release
+```sh
+git clone --recursive https://github.com/godfreyschneider0-lgtm/geph-lite.git
+cd geph-lite
+cargo build --release -p geph-tui
+cargo build --release -p geph5-client
 ```
+
+The build produces two binaries in `target/release/`:
+- `geph-tui` — the TUI application
+- `geph5-client` — the proxy engine subprocess
 
 ## Running
 
-The binary has three modes. Run `gephgui-tui -h` (or `--help`) to see them all:
-
-```shell
-cargo run --release                      # interactive TUI (default)
-cargo run --release -- --daemon          # headless daemon, uses saved config
-cargo run --release -- --config <FILE>   # core client with a raw YAML config
+```sh
+cargo run --release                  # interactive TUI (default)
+geph-tui --ctl start                 # headless daemon start
+geph-tui --ctl status                # check daemon status
+geph-tui --ctl stop                  # stop daemon
 ```
 
-### Interactive TUI (default)
-
-Launch with no arguments. Configure your Account ID, pick a region, set ports in
-the Config tab, then press `s` to connect. Settings are saved automatically to
-`geph5_tui_prefs.json` in your config directory and reused by `--daemon`.
-
-### Headless daemon (`--daemon`)
-
-Starts the VPN with your previously-saved config — no UI. On startup it prints the
-effective configuration (Account ID, connection mode, VPN mode, listen addresses,
-exit region) to stdout, then runs until killed. Logs go to stderr.
-
-```shell
-# foreground (Ctrl+C to stop)
-./gephgui-tui --daemon
-
-# background
-nohup ./gephgui-tui --daemon > geph.log 2>&1 &
-# stop with: kill <pid>   (or launch the TUI and press 'x')
-```
-
-> First-time setup: run the TUI once to enter your Account ID and choose a region,
-> then `--daemon` will reuse those settings.
-
->It can be compiled and run in termux.
->You need `pkg install perl` before compile.
->If you run the android version , you cannot use its `tun0` without root , but `socks5` is fine.
+Or use the bundled `mikuctl` script:
 
 ```sh
-/data/data/com.termux/files/home/geph-tui/target/release # file gephgui-tui                                                                                                                       
-gephgui-tui: ELF shared object, 64-bit LSB arm64, dynamic (/system/bin/linker64), for Android 24, built by NDK r29 (14206865), stripped
+mikuctl start    # start the daemon
+mikuctl stop     # stop the daemon
+mikuctl status   # show connection status
+mikuctl log      # tail the log
+mikuctl restart  # stop then start
 ```
 
-**Keybindings in the app:**
-- `1`-`4`: Switch tabs (Status, Regions, Config, Debug)
-- `s` / `x`: Start / stop VPN
-- `q`: Quit application
-- `e`, `p`, `h`: Edit Account ID, SOCKS5 port, HTTP port (in the Config tab)
-- `v`, `l`, `b`: Toggle listen-all-interfaces / direct-vs-bridged
-- `r`: Register a new account
-- In the **Regions** tab: `Up`/`Down` to move, `Enter` to select a region, `a` for Auto
-  (the specific exit node within a region is chosen automatically)
+### Keybindings (TUI)
+
+| Key | Action |
+|-----|--------|
+| `1`–`4` | Switch tabs (Status / Regions / Config / Debug) |
+| `s` / `x` | Start / stop connection |
+| `e` | Edit Account ID |
+| `p` / `h` | Edit SOCKS5 port / HTTP port |
+| `l` | Toggle listen-all-interfaces |
+| `b` | Toggle direct vs bridged mode |
+| `r` | Register a new account |
+| `Up`/`Down` + `Enter` | Select exit region |
+| `q` | Quit |
+
+Settings are saved automatically to `geph5_tui_prefs.json` in your config directory.
 
 ## Packaging
 
-Release binary name: **MikuClub**. The Cargo package `gephgui-tui` is the development name.
+### Linux (.deb)
 
-### Prerequisites
-
-| Method | Requires |
-|---|---|
-| Linux (cargo-deb) | `cargo install cargo-deb` |
-| Linux (manual) | `dpkg-deb` |
-| Termux | `docker`, `git clone https://github.com/termux/termux-packages.git` |
-
-### Linux
-
-```shell
-# Recommended: cargo-deb (auto-detects deps, xz compression)
-./package.sh
-./package.sh --install        # build + dpkg -i
-
-# Alternative: manual dpkg-deb
-./package.sh --manual
-
-# Install / remove / purge
-sudo dpkg -i mikuclub_*.deb
-sudo apt remove mikuclub           # remove, keep config/cache
-sudo apt purge mikuclub           # remove everything
+```sh
+./package.sh                  # cargo-deb (native amd64)
+./package.sh --arm64          # cross-compile for aarch64
+./package.sh --manual         # manual dpkg-deb fallback
+./package.sh --install        # build + install immediately
 ```
 
-### Termux (aarch64)
+Install the produced `.deb`:
+```sh
+sudo dpkg -i geph-tui_*.deb
+sudo apt remove geph-tui      # remove
+```
 
-Builds via [termux-packages](https://github.com/termux/termux-packages) Docker CI.
+### Termux (Android)
 
-```shell
-# 1. Clone termux-packages
+```sh
 git clone https://github.com/termux/termux-packages.git
-
-# 2. Copy the package definition into it
-cp -r packages/mikuclub termux-packages/packages/
-
-# 3. Build via Docker CI
+cp -r packages/geph-tui termux-packages/packages/
 cd termux-packages
 TERMUX_DOCKER_RUN_EXTRA_ARGS="--security-opt apparmor=unconfined" \
-    ./scripts/run-docker.sh ./build-package.sh -I -f mikuclub
-
-# 4. Transfer to device and install
-adb push output/mikuclub_*.deb /data/local/tmp/
-pkg install /data/local/tmp/mikuclub_*.deb
+    ./scripts/run-docker.sh ./build-package.sh -I -f geph-tui
 ```
 
-### File Layout
+## Project structure
 
 ```
-geph-tui/
-├── package.sh                      # One-click packaging script
-├── mikuctl                        # Daemon control script (start/stop/status/log/restart)
-├── package/
-│   ├── DEBIAN/                    # Manual dpkg-deb templates (Linux fallback)
-│   │   ├── control.template
-│   │   ├── postinst
-│   │   └── postrm
-│   └── deb-scripts/               # cargo-deb maintainer scripts (Linux)
-│       ├── postinst
-│       └── postrm
-└── packages/                      # Termux package definition (copy to termux-packages/)
-    └── mikuclub/
-        └── build.sh
+geph-lite/
+├── src/                  # TUI application
+│   ├── main.rs           # entry point, CLI args, event loop
+│   ├── state.rs          # AppState, TuiPrefs, persisted config
+│   ├── daemon.rs         # subprocess lifecycle + TCP RPC transport
+│   ├── event.rs          # keyboard handling
+│   ├── ui/               # ratatui rendering (status, nodes, config, debug)
+│   └── default-config.yaml
+├── geph5/                # geph-lite engine (submodule)
+├── package.sh            # .deb packaging
+├── mikuctl               # daemon control script
+├── packages/geph-tui/    # termux package definition
+└── package/              # debian templates
 ```
 
 ## License
-The code is generally licensed under MPL 2.0. Low-level libraries useful to a wide variety of projects, such as the `sillad` framework, are generally licensed under the ISC license.
+
+MPL 2.0.

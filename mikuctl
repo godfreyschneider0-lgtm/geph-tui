@@ -2,7 +2,7 @@
 set -euo pipefail
 
 CTL_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
-PROG="${MIKU_BIN:-${CTL_DIR}/MikuClub}"
+PROG="${MIKU_BIN:-${CTL_DIR}/geph-tui}"
 LOG_FILE="${MIKU_LOG:-${TMPDIR:-/tmp}/miku/miku.log}"
 SOCKS_PORT="${MIKU_SOCKS_PORT:-9909}"
 HTTP_PORT="${MIKU_HTTP_PORT:-9910}"
@@ -19,7 +19,7 @@ Commands:
   restart  Stop then start
 
 Environment:
-  MIKU_BIN        MikuClub binary path (default: $PROG)
+  MIKU_BIN        geph-tui binary path (default: $PROG)
   MIKU_LOG        Log file path (default: $LOG_FILE)
   MIKU_SOCKS_PORT SOCKS5 port (default: $SOCKS_PORT)
   MIKU_HTTP_PORT  HTTP proxy port (default: $HTTP_PORT)

@@ -1,9 +1,9 @@
 [package]
-name = "gephgui-tui"
+name = "geph-tui"
 version = "2.1.0"
 edition = "2021"
 description = "TUI client for Geph 5"
-repository = "https://github.com/godfreyschneider0-lgtm/gephgui-tui"
+repository = "https://github.com/godfreyschneider0-lgtm/geph-lite"
 license = "MPL-2.0"
 
 # See more keys and their definitions at https://doc-rust-lang.org/cargo/reference/manifest.html
@@ -17,7 +17,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.3.0"
+version = "0.2.102"
 repository = "https://github.com/geph-official/geph5"
 license = "ISC"
 edition = "2024"
@@ -68,7 +68,7 @@ winres = "0.1.12"
 [build-dependencies]
 
 [package.metadata.deb]
-name = "mikuclub"
+name = "geph-tui"
 maintainer = "godfreyschneider0-lgtm <godfreyschneider0@lgtm.dev>"
 copyright = "2025-2026, godfreyschneider0-lgtm <godfreyschneider0@lgtm.dev>"
 depends = "libc6 (>= 2.17), libgcc-s1"
@@ -83,7 +83,7 @@ extended-description = """
 license-file = ["package/deb-copyright", "0"]
 maintainer-scripts = "package/deb-scripts"
 assets = [
-    ["target/release/gephgui-tui", "usr/bin/MikuClub", "755"],
+    ["target/release/geph-tui", "usr/bin/geph-tui", "755"],
     ["target/release/geph5-client", "usr/bin/geph5-client", "755"],
     ["mikuctl", "usr/bin/mikuctl", "755"],
 ]

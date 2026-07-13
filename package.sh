@@ -2,7 +2,7 @@
 set -euo pipefail
 
 #
-# package.sh — Build MikuClub .deb packages (Linux)
+# package.sh — Build geph-tui .deb packages (Linux)
 #
 # Usage:
 #   ./package.sh                     # Default: cargo deb (native amd64)
@@ -13,8 +13,8 @@ set -euo pipefail
 #   ./package.sh --install           # Install immediately after build
 #
 # Output:
-#   cargo-deb -> target/debian/mikuclub_<VERSION>_<ARCH>.deb
-#   manual    -> ./mikuclub_<VERSION>_<ARCH>.deb
+#   cargo-deb -> target/debian/geph-tui_<VERSION>_<ARCH>.deb
+#   manual    -> ./geph-tui_<VERSION>_<ARCH>.deb
 #
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
@@ -82,13 +82,13 @@ if [ "$MODE" = "cargo-deb" ]; then
     info "Building deb via cargo-deb ..."
     cargo deb --manifest-path "$REPO_ROOT/Cargo.toml" "${CARGO_DEB_EXTRA_ARGS[@]}" "${TARGET_FLAG[@]}"
 
-    OUTPUT="$(ls -t "$REPO_ROOT/target/debian/mikuclub_"*"_${ARCH}.deb" 2>/dev/null | head -1)"
+    OUTPUT="$(ls -t "$REPO_ROOT/target/debian/geph-tui_"*"_${ARCH}.deb" 2>/dev/null | head -1)"
     [ -f "$OUTPUT" ] || die "deb not found in target/debian/ for arch ${ARCH}"
 
     if $INSTALL; then
         info "Installing ${OUTPUT##*/} ..."
         sudo dpkg -i "$OUTPUT"
-        ok "Installed. Run: MikuClub (interactive TUI) or mikuctl start (daemon)"
+        ok "Installed. Run: geph-tui (interactive TUI) or mikuctl start (daemon)"
     else
         echo ""
         ok "Package built successfully!"
@@ -97,8 +97,8 @@ if [ "$MODE" = "cargo-deb" ]; then
         echo "  Size:     $(du -h "$OUTPUT" | cut -f1)"
         echo ""
         echo "  Install:  sudo dpkg -i ${OUTPUT##*/}"
-        echo "  Remove:   sudo apt remove mikuclub"
-        echo "  Purge:    sudo apt purge mikuclub"
+        echo "  Remove:   sudo apt remove geph-tui"
+        echo "  Purge:    sudo apt purge geph-tui"
     fi
     exit 0
 fi
@@ -107,8 +107,8 @@ fi
 STAGING_DIR="$(mktemp -d)"
 trap 'rm -rf "$STAGING_DIR"' EXIT
 
-PACKAGE_NAME="mikuclub"
-BINARY_NAME="MikuClub"
+PACKAGE_NAME="geph-tui"
+BINARY_NAME="geph-tui"
 CTL_NAME="mikuctl"
 PREFIX="/usr"
 DEST_DIR="${STAGING_DIR}${PREFIX}"
@@ -118,7 +118,7 @@ WORKSPACE_VERSION="2.1.0"
 RELEASE_DIR="$REPO_ROOT/target/${TARGET_DIR}/release"
 
 info "Compiling TUI (release)..."
-cargo build --release -p gephgui-tui --manifest-path "$REPO_ROOT/Cargo.toml" "${TARGET_FLAG[@]}" \
+cargo build --release -p geph-tui --manifest-path "$REPO_ROOT/Cargo.toml" "${TARGET_FLAG[@]}" \
     || die "cargo build failed"
 
 info "Compiling geph5-client (release, aws_lambda)..."
@@ -126,7 +126,7 @@ cargo build --release -p geph5-client --features aws_lambda \
     --manifest-path "$REPO_ROOT/Cargo.toml" "${TARGET_FLAG[@]}" \
     || die "geph5-client build failed"
 
-BINARY_SRC="$RELEASE_DIR/gephgui-tui"
+BINARY_SRC="$RELEASE_DIR/geph-tui"
 [ -f "$BINARY_SRC" ] || die "Binary not found: $BINARY_SRC"
 
 ENGINE_SRC="$RELEASE_DIR/geph5-client"
