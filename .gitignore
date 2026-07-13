@@ -3,3 +3,5 @@ gephgui-wry/
 .omo/
 *.deb
 termux-packages/
+geph-lite/
+geph5/

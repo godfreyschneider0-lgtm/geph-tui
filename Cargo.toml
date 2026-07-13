@@ -3,7 +3,7 @@ name = "geph-tui"
 version = "2.1.0"
 edition = "2021"
 description = "TUI client for Geph 5"
-repository = "https://github.com/godfreyschneider0-lgtm/geph-lite"
+repository = "https://github.com/godfreyschneider0-lgtm/geph5-lite"
 license = "MPL-2.0"
 
 # See more keys and their definitions at https://doc-rust-lang.org/cargo/reference/manifest.html
@@ -11,8 +11,8 @@ license = "MPL-2.0"
 [workspace]
 members = [
     ".",
-    "geph5/libraries/*",
-    "geph5/binaries/*",
+    "geph-lite/libraries/*",
+    "geph-lite/binaries/*",
 ]
 resolver = "2"
 
@@ -50,10 +50,10 @@ rand = "0.8.6"
 nanorpc = "0.1.13"
 async-trait = "0.1.89"
 thiserror = "2.0.18"
-geph5-broker-protocol = { path = "geph5/libraries/geph5-broker-protocol" }
+geph5-broker-protocol = { path = "geph-lite/libraries/geph5-broker-protocol" }
 futures-util = { version = "0.3.32", features = ["io"] }
 isocountry = "0.3.2"
-geph5-misc-rpc = { path = "geph5/libraries/geph5-misc-rpc" }
+geph5-misc-rpc = { path = "geph-lite/libraries/geph5-misc-rpc" }
 derive_more = "=2.0.1"
 tui-textarea = "0.7.0"
 hmac-sha256 = "1.1.14"
