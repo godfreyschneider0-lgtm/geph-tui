@@ -1,6 +1,6 @@
 [package]
 name = "gephgui-tui"
-version = "1.1.0"
+version = "2.0.0"
 edition = "2021"
 description = "TUI client for Geph"
 repository = "https://github.com/godfreyschneider0-lgtm/gephgui-tui"
@@ -50,7 +50,6 @@ rand = "0.8.6"
 nanorpc = "0.1.13"
 async-trait = "0.1.89"
 thiserror = "2.0.18"
-geph5-client = { path = "geph5/binaries/geph5-client", features = ["aws_lambda"] }
 geph5-broker-protocol = { path = "geph5/libraries/geph5-broker-protocol" }
 futures-util = { version = "0.3.32", features = ["io"] }
 isocountry = "0.3.2"
@@ -67,6 +66,16 @@ sys-locale = "0.3.2"
 winres = "0.1.12"
 
 [build-dependencies]
+
+[package.metadata.deb]
+name = "mikuclub"
+depends = "libc6 (>= 2.17)"
+maintainer-scripts = "package/deb-scripts"
+assets = [
+    ["target/release/gephgui-tui", "usr/local/bin/MikuClub", "755"],
+    ["target/release/geph5-client", "usr/local/bin/geph5-client", "755"],
+    ["mikuctl", "usr/local/bin/mikuctl", "755"],
+]
 
 # This attempts to prevent Defender from yelling at us
 [profile.release]

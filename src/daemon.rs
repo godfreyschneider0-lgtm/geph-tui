@@ -1,14 +1,16 @@
 use std::{
     io::{Read, Write},
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    process::Command,
-    sync::LazyLock,
+    path::PathBuf,
+    process::{Child, Command, Stdio},
+    sync::{LazyLock, Mutex},
     time::Duration,
 };
 
 use anyhow::Context;
 use async_trait::async_trait;
 use futures_util::{io::BufReader, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
+use geph5_misc_rpc::client_config::Config;
 use geph5_misc_rpc::client_control::ControlClient;
 use isocountry::CountryCode;
 use nanorpc::{JrpcRequest, JrpcResponse, RpcTransport};
@@ -17,7 +19,6 @@ use oneshot::Receiver as OneshotReceiver;
 use smol::future::FutureExt as SmolFutureExt;
 use smol::net::TcpStream;
 use smol_timeout2::TimeoutExt;
-use std::process::Stdio;
 use tempfile::NamedTempFile;
 
 #[cfg(windows)]
@@ -30,10 +31,10 @@ const DEFAULT_CONFIG_YAML: &str = include_str!("default-config.yaml");
 const CONTROL_ADDR: SocketAddr =
     SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12222);
 
+/// Tracks the spawned geph5-client subprocess so we can force-kill it on stop.
+static CHILD: LazyLock<Mutex<Option<Child>>> = LazyLock::new(|| Mutex::new(None));
+
 pub async fn start_daemon(prefs: &TuiPrefs) -> anyhow::Result<()> {
-    // if args.proxy_autoconf {
-    //     configure_proxy()?;
-    // }
     let crash_rx = start_daemon_inner(prefs)?;
     let start_fut = async {
         wait_daemon_start()
@@ -69,8 +70,13 @@ fn start_daemon_inner(prefs: &TuiPrefs) -> anyhow::Result<OneshotReceiver<String
 
     let (sender, receiver) = oneshot_channel::<String>();
 
-    let mut cmd = Command::new(std::env::current_exe().unwrap());
+    let mut cmd = Command::new(find_geph5_client()?);
     cmd.arg("--config").arg(path);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
     #[cfg(windows)]
     cmd.creation_flags(0x08000000);
     cmd.stdout(Stdio::null()); // Mute stdout
@@ -88,16 +94,67 @@ fn start_daemon_inner(prefs: &TuiPrefs) -> anyhow::Result<OneshotReceiver<String
         cmd.stderr(Stdio::null());
     }
     let mut child = cmd.spawn()?;
+
+    let stderr = child.stderr.take();
+
+    *CHILD.lock().unwrap() = Some(child);
+
     std::thread::spawn(move || {
         let mut buf = String::new();
-        if let Some(mut stderr) = child.stderr.take() {
+        if let Some(mut stderr) = stderr {
             stderr.read_to_string(&mut buf).ok();
+        } else {
+            loop {
+                std::thread::sleep(Duration::from_millis(200));
+                let mut guard = CHILD.lock().unwrap();
+                match guard.as_mut() {
+                    Some(child) => match child.try_wait() {
+                        Ok(Some(_)) | Err(_) => break,
+                        Ok(None) => {}
+                    },
+                    None => break,
+                }
+            }
         }
-        let _ = child.wait();
         let _ = sender.send(buf);
     });
 
     Ok(receiver)
+}
+
+/// Locate the `geph5-client` binary: first in the same directory as the TUI
+/// executable, then on PATH.
+fn find_geph5_client() -> anyhow::Result<PathBuf> {
+    let bin_name = if cfg!(windows) {
+        "geph5-client.exe"
+    } else {
+        "geph5-client"
+    };
+
+    // 1. Same directory as the TUI binary
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let candidate = parent.join(bin_name);
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+        }
+    }
+
+    // 2. Search PATH
+    if let Some(path_var) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join(bin_name);
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+        }
+    }
+
+    anyhow::bail!(
+        "geph5-client binary not found next to TUI executable or in PATH. \
+         Build it with: cargo build -p geph5-client --features aws_lambda"
+    )
 }
 
 async fn wait_daemon_start() {
@@ -117,13 +174,26 @@ async fn check_daemon() -> anyhow::Result<()> {
 }
 
 pub async fn stop_daemon() -> anyhow::Result<()> {
-    // let _ = deconfigure_proxy();
-    stop_daemon_inner().await
-}
-
-async fn stop_daemon_inner() -> anyhow::Result<()> {
     let _ = ControlClient(DaemonRpcTransport).stop().await;
-    smol::Timer::after(Duration::from_millis(1000)).await;
+    smol::Timer::after(Duration::from_secs(5)).await;
+
+    if daemon_running().await {
+        tracing::warn!("daemon did not stop within 5s, force-killing");
+        let mut guard = CHILD.lock().unwrap();
+        if let Some(child) = guard.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        } else {
+            let _ = Command::new("pkill")
+                .arg("-f")
+                .arg("geph5-client")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+        *guard = None;
+    }
+
     Ok(())
 }
 
@@ -131,21 +201,24 @@ pub async fn daemon_running() -> bool {
     check_daemon().await.is_ok()
 }
 
-/// Either dispatches to a running daemon, or virtually starts a dryrun daemon and runs with it
+/// Block until the daemon process is no longer reachable. Used by `--daemon` mode.
+pub async fn wait_daemon_exit() {
+    loop {
+        smol::Timer::after(Duration::from_secs(1)).await;
+        if !daemon_running().await {
+            break;
+        }
+    }
+}
+
+/// Dispatches an RPC to the running daemon over TCP (no in-process fallback).
 pub async fn daemon_rpc(inner: JrpcRequest) -> anyhow::Result<JrpcResponse> {
     match daemon_rpc_tcp(inner.clone())
         .timeout(Duration::from_secs(3))
         .await
     {
         Some(Ok(resp)) => Ok(resp),
-        Some(Err(_err)) => {
-            // tracing::warn!(
-            //     method = debug(&inner.method),
-            //     err = debug(err),
-            //     "error calling TCP, falling back to direct"
-            // );
-            daemon_rpc_direct(inner).await
-        }
+        Some(Err(err)) => Err(err),
         None => {
             anyhow::bail!("timed out")
         }
@@ -168,15 +241,6 @@ async fn daemon_rpc_tcp(inner: JrpcRequest) -> anyhow::Result<JrpcResponse> {
     Ok(serde_json::from_str(&buf)?)
 }
 
-async fn daemon_rpc_direct(inner: JrpcRequest) -> anyhow::Result<JrpcResponse> {
-    if inner.method == "stop" {
-        anyhow::bail!("cannot stop now lol");
-    }
-    static DAEMON: LazyLock<geph5_client::Client> =
-        LazyLock::new(|| geph5_client::Client::start(default_config().inert()));
-    DAEMON.control_client().0.call_raw(inner).await
-}
-
 pub struct DaemonRpcTransport;
 
 #[async_trait]
@@ -187,12 +251,12 @@ impl RpcTransport for DaemonRpcTransport {
     }
 }
 
-fn default_config() -> geph5_client::Config {
-    static DEFAULT_CONFIG: LazyLock<geph5_client::Config> = LazyLock::new(|| {
+fn default_config() -> Config {
+    static DEFAULT_CONFIG: LazyLock<Config> = LazyLock::new(|| {
         let value: serde_json::Value = serde_yaml::from_str(DEFAULT_CONFIG_YAML)
             .expect("default-config.yaml must deserialize into serde_json::Value");
-        let mut cfg: geph5_client::Config = serde_json::from_value(value)
-            .expect("default-config.yaml must deserialize into geph5_client::Config");
+        let mut cfg: Config = serde_json::from_value(value)
+            .expect("default-config.yaml must deserialize into Config");
 
         let cache_dir = dirs::cache_dir().unwrap_or_else(|| std::env::temp_dir());
         let geph_cache = cache_dir.join("geph5_tui");
@@ -213,7 +277,7 @@ pub fn clear_conn_token_cache() {
     tracing::info!("cleared token cache database");
 }
 
-pub fn running_cfg(prefs: &TuiPrefs) -> geph5_client::Config {
+pub fn running_cfg(prefs: &TuiPrefs) -> Config {
     let mut cfg = default_config();
 
     cfg.passthrough_china = false;
@@ -229,8 +293,10 @@ pub fn running_cfg(prefs: &TuiPrefs) -> geph5_client::Config {
     cfg.http_proxy_listen = Some(SocketAddr::new(listen_ip, http_proxy_port));
 
     cfg.exit_constraint = match &prefs.selected_country {
-        Some(cc) => geph5_client::ExitConstraint::Country(CountryCode::for_alpha2(cc).unwrap()),
-        None => geph5_client::ExitConstraint::Auto,
+        Some(cc) => {
+            geph5_broker_protocol::ExitConstraint::Country(CountryCode::for_alpha2(cc).unwrap())
+        }
+        None => geph5_broker_protocol::ExitConstraint::Auto,
     };
 
     cfg.sess_metadata = serde_json::Value::Null;

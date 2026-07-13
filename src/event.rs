@@ -31,7 +31,6 @@ pub fn handle_focused_input<'a>(state: &mut AppState<'a>, key: KeyEvent) {
 pub async fn handle_global_key<'a>(state: &mut AppState<'a>, key: KeyEvent) -> bool {
     match key.code {
         KeyCode::Char('q') => {
-            let _ = daemon::stop_daemon().await;
             return true;
         }
         KeyCode::Char('1') => state.tab = TabIdx::Status,
@@ -79,6 +78,11 @@ pub async fn handle_global_key<'a>(state: &mut AppState<'a>, key: KeyEvent) -> b
                 .set_style(Style::default().fg(Color::Yellow));
         }
         KeyCode::Char('r') if state.tab == TabIdx::Config => {
+            if !state.is_running {
+                let prefs = state.to_prefs();
+                let _ = daemon::start_daemon(&prefs).await;
+                state.is_running = daemon::daemon_running().await;
+            }
             match ControlClient(DaemonRpcTransport).start_registration().await {
                 Ok(Ok(idx)) => {
                     state.registration_idx = Some(idx);

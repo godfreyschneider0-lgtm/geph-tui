@@ -19,7 +19,7 @@ mod event;
 mod state;
 mod ui;
 
-use daemon::{daemon_running, running_cfg, DaemonRpcTransport};
+use daemon::{daemon_running, start_daemon, stop_daemon, DaemonRpcTransport};
 use geph5_misc_rpc::client_control::{ConnInfo, ControlClient};
 use state::{AppState, LogWriter, TuiPrefs};
 
@@ -43,15 +43,9 @@ fn main() -> anyhow::Result<()> {
             println!("MODES:");
             println!("    (none)            Interactive TUI (default). Configure account, region,");
             println!("                      ports; press 's' to connect, 'q' to quit.");
-            println!(
-                "    --daemon          Headless: connect using saved config, no UI. Logs go to"
-            );
-            println!("                      stderr. Set up your account in the TUI first.");
-            println!("    --config <FILE>   Run the core client with a YAML config file.");
+            println!("    --ctl <cmd>       Control the daemon without UI.");
+            println!("                      Commands: start, stop, status");
             println!("    -h, --help        Show this help.\n");
-            println!("HEADLESS USAGE:");
-            println!("    nohup gephgui-tui --daemon > geph.log 2>&1 &");
-            println!("    # stop with: kill <pid>   (or launch the TUI and press 'x')\n");
             println!("TUI KEYS:");
             println!("    1-4   tabs (Status / Regions / Config / Debug)");
             println!("    s/x   start / stop connection");
@@ -65,70 +59,23 @@ fn main() -> anyhow::Result<()> {
         }
         _ => {}
     }
-    if let Some("--config") = args.get(1).map(|s| s.as_str()) {
-        let val: serde_json::Value = serde_yaml::from_slice(&std::fs::read(&args[2])?)?;
-        let cfg: geph5_client::Config = serde_json::from_value(val)?;
-        let client = geph5_client::Client::start(cfg);
-        smol::future::block_on(client.wait_until_dead())?;
-        return Ok(());
-    }
-
-    if let Some("--daemon") = args.get(1).map(|s| s.as_str()) {
+    if let Some("--ctl") = args.get(1).map(|s| s.as_str()) {
         let _ = tracing_subscriber::fmt()
             .with_writer(std::io::stderr)
             .try_init();
 
-        let prefs = TuiPrefs::load();
-
-        if prefs.secret.is_empty() {
-            eprintln!("error: no account configured. Run the TUI once to set your Account ID, then use --daemon.");
-            return Err(anyhow::anyhow!("secret not configured"));
-        }
-
-        let socks5_port: u16 = prefs.socks_port.parse().unwrap_or(9909);
-        let http_proxy_port: u16 = prefs.http_port.parse().unwrap_or(9910);
-
-        let listen_ip = if prefs.listen_all {
-            "0.0.0.0"
-        } else {
-            "127.0.0.1"
-        };
-        let connection = if prefs.allow_direct {
-            "Direct"
-        } else {
-            "Bridged"
-        };
-        let listen_all_str = if prefs.listen_all { "ON" } else { "OFF" };
-        let exit_display = match &prefs.selected_country {
-            Some(cc) => match CountryCode::for_alpha2(cc) {
-                Ok(country) => format!("{} ({})", country.name(), country.alpha2()),
-                Err(_) => cc.clone(),
-            },
-            None => "Auto".to_string(),
-        };
-
-        println!("gephgui-tui daemon (headless mode)");
-        println!("==================================");
-        println!("Account ID:    {}", prefs.secret);
-        println!("Connection:    {}", connection);
-        println!("Listen all:    {}", listen_all_str);
-        println!("SOCKS5:        {}:{}", listen_ip, socks5_port);
-        println!("HTTP Proxy:    {}:{}", listen_ip, http_proxy_port);
-        println!("Exit Node:     {}", exit_display);
-        println!("==================================");
-        println!();
-        println!("Starting daemon... Press Ctrl+C to stop.");
-
-        if prefs.last_connected_secret.as_deref() != Some(prefs.secret.as_str()) {
-            daemon::clear_conn_token_cache();
-        }
-        let mut saved_prefs = prefs.clone();
-        saved_prefs.last_connected_secret = Some(prefs.secret.clone());
-        saved_prefs.save();
-
-        let cfg = running_cfg(&prefs);
-        let client = geph5_client::Client::start(cfg);
-        smol::future::block_on(client.wait_until_dead())?;
+        let subcmd = args.get(2).map(|s| s.as_str()).unwrap_or("status");
+        smol::block_on(async {
+            match subcmd {
+                "start" => ctl_start().await,
+                "stop" => ctl_stop().await,
+                "status" => ctl_status().await,
+                _ => {
+                    eprintln!("Usage: MikuClub --ctl start|stop|status");
+                    std::process::exit(1);
+                }
+            }
+        })?;
         return Ok(());
     }
 
@@ -190,6 +137,11 @@ async fn run_app<B: Backend>(
             .borders(Borders::ALL)
             .title("HTTP Proxy Port"),
     );
+
+    let prefs = state.to_prefs();
+    if !prefs.secret.is_empty() && !daemon_running().await {
+        let _ = start_daemon(&prefs).await;
+    }
 
     loop {
         state.update_info = autoupdate::get_cached_update();
@@ -341,4 +293,73 @@ async fn run_app<B: Backend>(
             state.sync_prefs();
         }
     }
+}
+
+async fn ctl_start() -> anyhow::Result<()> {
+    if daemon_running().await {
+        println!("already running");
+        return Ok(());
+    }
+    let prefs = TuiPrefs::load();
+    if prefs.secret.is_empty() {
+        eprintln!("no account configured");
+        std::process::exit(1);
+    }
+    if prefs.last_connected_secret.as_deref() != Some(prefs.secret.as_str()) {
+        daemon::clear_conn_token_cache();
+        let mut saved = prefs.clone();
+        saved.last_connected_secret = Some(prefs.secret.clone());
+        saved.save();
+    }
+    start_daemon(&prefs).await?;
+    println!("started");
+    Ok(())
+}
+
+async fn ctl_stop() -> anyhow::Result<()> {
+    if !daemon_running().await {
+        println!("not running");
+        return Ok(());
+    }
+    stop_daemon().await?;
+    println!("stopped");
+    Ok(())
+}
+
+async fn ctl_status() -> anyhow::Result<()> {
+    let prefs = TuiPrefs::load();
+    let socks5 = prefs.socks_port;
+    let http = prefs.http_port;
+
+    if !daemon_running().await {
+        println!("running=no");
+        println!("socks5_port={socks5}");
+        println!("http_port={http}");
+        return Ok(());
+    }
+
+    let conn = ControlClient(DaemonRpcTransport)
+        .conn_info()
+        .await
+        .unwrap_or(ConnInfo::Disconnected);
+
+    let state = match &conn {
+        ConnInfo::Connected { .. } => "connected",
+        ConnInfo::Connecting => "connecting",
+        ConnInfo::Disconnected => "disconnected",
+    };
+
+    println!("running=yes");
+    println!("conn={state}");
+    println!("socks5_port={socks5}");
+    println!("http_port={http}");
+
+    if let ConnInfo::Connected { sessions } = &conn {
+        if let Some(s) = sessions.first() {
+            let cc = &s.exit.country;
+            println!("exit={} ({})", cc.name(), cc.alpha2());
+        }
+    }
+
+    Ok(())
 }
