@@ -2608,6 +2608,7 @@ dependencies = [
  "tachyonix",
  "tap",
  "thiserror 1.0.69",
+ "tikv-jemallocator",
  "tokio",
  "tokio-native-tls",
  "tower-service",
@@ -2792,7 +2793,7 @@ dependencies = [
 
 [[package]]
 name = "gephgui-tui"
-version = "1.1.0"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "async-trait",

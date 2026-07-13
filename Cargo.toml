@@ -2,7 +2,7 @@
 name = "gephgui-tui"
 version = "2.0.0"
 edition = "2021"
-description = "TUI client for Geph"
+description = "TUI client for Geph 5"
 repository = "https://github.com/godfreyschneider0-lgtm/gephgui-tui"
 license = "MPL-2.0"
 
@@ -70,12 +70,22 @@ winres = "0.1.12"
 [package.metadata.deb]
 name = "mikuclub"
 maintainer = "godfreyschneider0-lgtm <godfreyschneider0@lgtm.dev>"
-depends = "libc6 (>= 2.17)"
+copyright = "2025-2026, godfreyschneider0-lgtm <godfreyschneider0@lgtm.dev>"
+depends = "libc6 (>= 2.17), libgcc-s1"
+section = "net"
+priority = "optional"
+extended-description = """
+ A lightweight terminal user interface client for the Geph 5 proxy service.
+ Provides SOCKS5 and HTTP proxy with an interactive TUI.
+ .
+ Daemon management via the bundled mikuctl command:
+   mikuctl start|stop|restart|status|log"""
+license-file = ["package/deb-copyright", "0"]
 maintainer-scripts = "package/deb-scripts"
 assets = [
-    ["target/release/gephgui-tui", "usr/local/bin/MikuClub", "755"],
-    ["target/release/geph5-client", "usr/local/bin/geph5-client", "755"],
-    ["mikuctl", "usr/local/bin/mikuctl", "755"],
+    ["target/release/gephgui-tui", "usr/bin/MikuClub", "755"],
+    ["target/release/geph5-client", "usr/bin/geph5-client", "755"],
+    ["mikuctl", "usr/bin/mikuctl", "755"],
 ]
 
 # This attempts to prevent Defender from yelling at us
