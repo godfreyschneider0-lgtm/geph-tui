@@ -88,7 +88,7 @@ if [ "$MODE" = "cargo-deb" ]; then
     if $INSTALL; then
         info "Installing ${OUTPUT##*/} ..."
         sudo dpkg -i "$OUTPUT"
-        ok "Installed. Run: geph-tui (interactive TUI) or mikuctl start (daemon)"
+        ok "Installed. Run: geph-tui (interactive TUI) or gephctl start (daemon)"
     else
         echo ""
         ok "Package built successfully!"
@@ -109,7 +109,7 @@ trap 'rm -rf "$STAGING_DIR"' EXIT
 
 PACKAGE_NAME="geph-tui"
 BINARY_NAME="geph-tui"
-CTL_NAME="mikuctl"
+CTL_NAME="gephctl"
 PREFIX="/usr"
 DEST_DIR="${STAGING_DIR}${PREFIX}"
 DEST_BIN="${DEST_DIR}/bin"
@@ -139,7 +139,7 @@ info "Assembling package: ${PACKAGE_NAME} ${VERSION} (${ARCH})"
 mkdir -p "$DEST_BIN"
 cp "$BINARY_SRC" "${DEST_BIN}/${BINARY_NAME}"
 cp "$ENGINE_SRC" "${DEST_BIN}/geph5-client"
-cp "$REPO_ROOT/mikuctl" "${DEST_BIN}/${CTL_NAME}"
+cp "$REPO_ROOT/gephctl" "${DEST_BIN}/${CTL_NAME}"
 chmod 755 "${DEST_BIN}/${BINARY_NAME}" "${DEST_BIN}/geph5-client" "${DEST_BIN}/${CTL_NAME}"
 
 mkdir -p "${STAGING_DIR}/DEBIAN"

@@ -36,6 +36,6 @@ termux_step_make_install() {
         "$TERMUX_PREFIX/bin/geph5-client"
 
     install -Dm700 \
-        "$TERMUX_PKG_SRCDIR/mikuctl" \
-        "$TERMUX_PREFIX/bin/mikuctl"
+        "$TERMUX_PKG_SRCDIR/gephctl" \
+        "$TERMUX_PREFIX/bin/gephctl"
 }

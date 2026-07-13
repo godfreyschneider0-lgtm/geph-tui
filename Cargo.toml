@@ -78,14 +78,14 @@ extended-description = """
  A lightweight terminal user interface client for the Geph 5 proxy service.
  Provides SOCKS5 and HTTP proxy with an interactive TUI.
  .
- Daemon management via the bundled mikuctl command:
-   mikuctl start|stop|restart|status|log"""
+ Daemon management via the bundled gephctl command:
+   gephctl start|stop|restart|status|log"""
 license-file = ["package/deb-copyright", "0"]
 maintainer-scripts = "package/deb-scripts"
 assets = [
     ["target/release/geph-tui", "usr/bin/geph-tui", "755"],
     ["target/release/geph5-client", "usr/bin/geph5-client", "755"],
-    ["mikuctl", "usr/bin/mikuctl", "755"],
+    ["gephctl", "usr/bin/gephctl", "755"],
 ]
 
 # This attempts to prevent Defender from yelling at us

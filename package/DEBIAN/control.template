@@ -8,6 +8,6 @@ Description: Lightweight TUI client for Geph 5
  A lightweight terminal user interface client for the Geph 5 proxy service.
  Provides SOCKS5/HTTP proxy with an interactive TUI.
  .
- Daemon management via the bundled mikuctl command:
-   mikuctl start|stop|restart|status|log
+ Daemon management via the bundled gephctl command:
+   gephctl start|stop|restart|status|log
 Depends: libc6 (>= 2.17), libgcc-s1

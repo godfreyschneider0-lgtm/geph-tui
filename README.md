@@ -50,14 +50,14 @@ geph-tui --ctl status                # check daemon status
 geph-tui --ctl stop                  # stop daemon
 ```
 
-Or use the bundled `mikuctl` script:
+Or use the bundled `gephctl` script:
 
 ```sh
-mikuctl start    # start the daemon
-mikuctl stop     # stop the daemon
-mikuctl status   # show connection status
-mikuctl log      # tail the log
-mikuctl restart  # stop then start
+gephctl start    # start the daemon
+gephctl stop     # stop the daemon
+gephctl status   # show connection status
+gephctl log      # tail the log
+gephctl restart  # stop then start
 ```
 
 ### Keybindings (TUI)
@@ -116,7 +116,7 @@ geph-lite/
 │   └── default-config.yaml
 ├── geph5/                # geph-lite engine (submodule)
 ├── package.sh            # .deb packaging
-├── mikuctl               # daemon control script
+├── gephctl              # daemon control script
 ├── packages/geph-tui/    # termux package definition
 └── package/              # debian templates
 ```
