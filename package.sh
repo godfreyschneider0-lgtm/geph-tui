@@ -74,13 +74,18 @@ if [ "$MODE" = "cargo-deb" ]; then
     command -v cargo-deb >/dev/null 2>&1 \
         || die "cargo-deb not found. Install: cargo install cargo-deb"
 
-    info "Pre-building geph5-client (with aws_lambda)..."
-    cargo build --release -p geph5-client --features aws_lambda \
+    info "Pre-building geph5-client..."
+    cargo build --release -p geph5-client \
         --manifest-path "$REPO_ROOT/Cargo.toml" "${TARGET_FLAG[@]}" \
         || die "geph5-client build failed"
 
-    info "Building deb via cargo-deb ..."
-    cargo deb --manifest-path "$REPO_ROOT/Cargo.toml" "${CARGO_DEB_EXTRA_ARGS[@]}" "${TARGET_FLAG[@]}"
+    info "Pre-building geph-tui..."
+    cargo build --release -p geph-tui \
+        --manifest-path "$REPO_ROOT/Cargo.toml" "${TARGET_FLAG[@]}" \
+        || die "geph-tui build failed"
+
+    info "Packaging deb (no rebuild)..."
+    cargo deb --no-build --manifest-path "$REPO_ROOT/Cargo.toml" "${TARGET_FLAG[@]}"
 
     OUTPUT="$(ls -t "$REPO_ROOT/target/debian/geph-tui_"*"_${ARCH}.deb" 2>/dev/null | head -1)"
     [ -f "$OUTPUT" ] || die "deb not found in target/debian/ for arch ${ARCH}"

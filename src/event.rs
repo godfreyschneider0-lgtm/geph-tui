@@ -80,8 +80,16 @@ pub async fn handle_global_key<'a>(state: &mut AppState<'a>, key: KeyEvent) -> b
         KeyCode::Char('r') if state.tab == TabIdx::Config => {
             if !state.is_running {
                 let prefs = state.to_prefs();
-                let _ = daemon::start_daemon(&prefs).await;
-                state.is_running = daemon::daemon_running().await;
+                match daemon::start_daemon(&prefs).await {
+                    Ok(()) => {
+                        state.is_running = daemon::daemon_running().await;
+                    }
+                    Err(err) => {
+                        state.registration_status =
+                            format!("Daemon failed to start: {err:#}");
+                        return false;
+                    }
+                }
             }
             match ControlClient(DaemonRpcTransport).start_registration().await {
                 Ok(Ok(idx)) => {
@@ -91,7 +99,9 @@ pub async fn handle_global_key<'a>(state: &mut AppState<'a>, key: KeyEvent) -> b
                 Ok(Err(msg)) => {
                     state.registration_status = format!("Failed to start: {}", msg);
                 }
-                Err(_) => {}
+                Err(err) => {
+                    state.registration_status = format!("RPC error: {err:#}");
+                }
             }
         }
 

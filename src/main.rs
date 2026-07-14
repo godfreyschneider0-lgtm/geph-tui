@@ -3,7 +3,6 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use isocountry::CountryCode;
 use ratatui::{
     backend::{Backend, CrosstermBackend},
     widgets::{Block, Borders},
@@ -269,7 +268,12 @@ async fn run_app<B: Backend>(
                     state.registration_status = format!("Registration failed: {}", msg);
                     state.registration_idx = None;
                 }
-                Err(_) => {}
+                Err(_) => {
+                    if !state.is_running {
+                        state.registration_status = "Daemon stopped during registration.".into();
+                        state.registration_idx = None;
+                    }
+                }
             }
         }
 

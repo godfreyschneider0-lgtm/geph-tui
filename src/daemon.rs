@@ -201,16 +201,6 @@ pub async fn daemon_running() -> bool {
     check_daemon().await.is_ok()
 }
 
-/// Block until the daemon process is no longer reachable. Used by `--daemon` mode.
-pub async fn wait_daemon_exit() {
-    loop {
-        smol::Timer::after(Duration::from_secs(1)).await;
-        if !daemon_running().await {
-            break;
-        }
-    }
-}
-
 /// Dispatches an RPC to the running daemon over TCP (no in-process fallback).
 pub async fn daemon_rpc(inner: JrpcRequest) -> anyhow::Result<JrpcResponse> {
     match daemon_rpc_tcp(inner.clone())
