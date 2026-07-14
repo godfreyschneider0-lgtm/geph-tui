@@ -72,6 +72,9 @@ fn start_daemon_inner(prefs: &TuiPrefs) -> anyhow::Result<OneshotReceiver<String
 
     let mut cmd = Command::new(find_geph5_client()?);
     cmd.arg("--config").arg(path);
+    // glibc-only: bionic (Android), macOS and Windows allocators ignore MALLOC_ARENA_MAX.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    cmd.env("MALLOC_ARENA_MAX", "2");
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
