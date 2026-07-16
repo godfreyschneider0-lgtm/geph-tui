@@ -1,6 +1,6 @@
 [package]
 name = "geph-tui"
-version = "2.1.1"
+version = "2.2.0"
 edition = "2021"
 description = "TUI client for Geph 5"
 repository = "https://github.com/godfreyschneider0-lgtm/geph5-lite"
