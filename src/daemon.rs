@@ -187,12 +187,23 @@ pub async fn stop_daemon() -> anyhow::Result<()> {
             let _ = child.kill();
             let _ = child.wait();
         } else {
-            let _ = Command::new("pkill")
-                .arg("-f")
-                .arg("geph5-client")
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
+            #[cfg(unix)]
+            {
+                let _ = Command::new("pkill")
+                    .arg("-f")
+                    .arg("geph5-client")
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            }
+            #[cfg(windows)]
+            {
+                let _ = Command::new("taskkill")
+                    .args(["/F", "/IM", "geph5-client.exe"])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            }
         }
         *guard = None;
     }

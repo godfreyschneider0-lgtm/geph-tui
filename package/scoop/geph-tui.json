@@ -1,0 +1,22 @@
+{
+    "version": "2.2.0",
+    "description": "Lightweight terminal UI client for Geph 5 proxy service",
+    "homepage": "https://github.com/godfreyschneider0-lgtm/geph5-lite",
+    "license": "MPL-2.0",
+    "notes": [
+        "Run 'geph-tui' to start the interactive TUI client.",
+        "Configuration is saved to %APPDATA%\\geph5_tui_prefs.json.",
+        "Logs are written to %TEMP%\\geph5_tui\\."
+    ],
+    "architecture": {
+        "64bit": {
+            "url": "file:///C:/path/to/geph-tui/geph-tui-2.1.1-windows-x64.zip",
+            "hash": "42d1f1d0ac6304315c2cbe329612a4b339214e135f4f0982b9ab6874dd6218e7",
+            "extract_dir": "geph-tui"
+        }
+    },
+    "bin": [
+        "geph-tui.exe",
+        "geph5-client.exe"
+    ]
+}
