@@ -215,6 +215,27 @@ pub async fn daemon_running() -> bool {
     check_daemon().await.is_ok()
 }
 
+pub async fn switch_exit(country: Option<String>) -> anyhow::Result<()> {
+    if !daemon_running().await {
+        tracing::debug!(?country, "daemon not running; switch will apply on next start");
+        return Ok(());
+    }
+    let constraint = match &country {
+        Some(cc) => geph5_broker_protocol::ExitConstraint::Country(
+            isocountry::CountryCode::for_alpha2(cc)
+                .map_err(|e| anyhow::anyhow!("bad country code {cc}: {e:?}"))?,
+        ),
+        None => geph5_broker_protocol::ExitConstraint::Auto,
+    };
+    tracing::info!(?country, "sending set_exit_constraint RPC");
+    ControlClient(DaemonRpcTransport)
+        .set_exit_constraint(constraint)
+        .await
+        .map_err(|e| anyhow::anyhow!("set_exit_constraint RPC transport error: {e:?}"))?
+        .map_err(|e| anyhow::anyhow!("set_exit_constraint rejected by daemon: {e}"))?;
+    Ok(())
+}
+
 /// Dispatches an RPC to the running daemon over TCP (no in-process fallback).
 pub async fn daemon_rpc(inner: JrpcRequest) -> anyhow::Result<JrpcResponse> {
     match daemon_rpc_tcp(inner.clone())

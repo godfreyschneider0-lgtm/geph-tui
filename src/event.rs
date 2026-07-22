@@ -140,12 +140,39 @@ pub async fn handle_global_key<'a>(state: &mut AppState<'a>, key: KeyEvent) -> b
         KeyCode::Enter if state.tab == TabIdx::Nodes => {
             if let Some(i) = state.node_list_state.selected() {
                 if i < state.countries.len() {
-                    state.selected_country = Some(state.countries[i].alpha2().to_string());
+                    let new_country = state.countries[i].alpha2().to_string();
+                    if state.selected_country.as_deref() != Some(new_country.as_str()) {
+                        state.selected_country = Some(new_country.clone());
+                        state.last_switch_target = Some(new_country.clone());
+                        state.switch_in_progress = true;
+                        state.switch_started_at = Some(std::time::Instant::now());
+                        state.sync_prefs();
+                        smolscale::spawn(async move {
+                            match daemon::switch_exit(Some(new_country)).await {
+                                Ok(()) => tracing::info!("switch_exit completed"),
+                                Err(e) => tracing::warn!(err = %e, "switch_exit failed"),
+                            }
+                        })
+                        .detach();
+                    }
                 }
             }
         }
         KeyCode::Char('a') if state.tab == TabIdx::Nodes => {
-            state.selected_country = None;
+            if state.selected_country.is_some() {
+                state.selected_country = None;
+                state.last_switch_target = None;
+                state.switch_in_progress = true;
+                state.switch_started_at = Some(std::time::Instant::now());
+                state.sync_prefs();
+                smolscale::spawn(async move {
+                    match daemon::switch_exit(None).await {
+                        Ok(()) => tracing::info!("switch_exit to Auto completed"),
+                        Err(e) => tracing::warn!(err = %e, "switch_exit failed"),
+                    }
+                })
+                .detach();
+            }
         }
         KeyCode::Char('j') if state.tab == TabIdx::Status => {
             state.status_scroll = state.status_scroll.saturating_add(1);

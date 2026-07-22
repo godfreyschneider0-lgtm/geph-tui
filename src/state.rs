@@ -109,6 +109,9 @@ pub struct AppState<'a> {
     pub countries: Vec<CountryCode>,
     pub node_list_state: ListState,
     pub selected_country: Option<String>,
+    pub switch_in_progress: bool,
+    pub last_switch_target: Option<String>,
+    pub switch_started_at: Option<std::time::Instant>,
 
     pub level_notice: Option<String>,
     pub news_items: Vec<NewsItem>,
@@ -158,6 +161,9 @@ impl<'a> AppState<'a> {
             countries: vec![],
             node_list_state: ListState::default(),
             selected_country: prefs.selected_country.clone(),
+            switch_in_progress: false,
+            last_switch_target: prefs.selected_country.clone(),
+            switch_started_at: None,
 
             level_notice: None,
             news_items: vec![],

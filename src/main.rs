@@ -43,7 +43,14 @@ fn main() -> anyhow::Result<()> {
             println!("    (none)            Interactive TUI (default). Configure account, region,");
             println!("                      ports; press 's' to connect, 'q' to quit.");
             println!("    --ctl <cmd>       Control the daemon without UI.");
-            println!("                      Commands: start, stop, status");
+            println!("                      Commands:");
+            println!("                    start, stop, status   — basic daemon control");
+            println!("                    switch [<cc|auto>] [--immediate]  — hot-swap exit (--immediate skips drain)");
+            println!("                    exit                  — show current exit constraint");
+            println!("                    exits                 — list available exits");
+            println!("                    sessions              — show active+draining sessions");
+            println!("                    logs [N]              — last N log lines (default 20)");
+            println!("                    account               — show account info");
             println!("    -h, --help        Show this help.\n");
             println!("TUI KEYS:");
             println!("    1-4   tabs (Status / Regions / Config / Debug)");
@@ -69,8 +76,27 @@ fn main() -> anyhow::Result<()> {
                 "start" => ctl_start().await,
                 "stop" => ctl_stop().await,
                 "status" => ctl_status().await,
+                "switch" => {
+                    let country = args.get(3).filter(|s| *s != "--immediate").map(|s| s.as_str());
+                    let immediate = args.iter().skip(3).any(|s| s == "--immediate");
+                    ctl_switch(country, immediate).await
+                }
+                "exit" => ctl_exit_constraint().await,
+                "exits" => ctl_exits().await,
+                "sessions" => ctl_sessions().await,
+                "logs" => ctl_logs(args.get(3).map(|s| s.as_str())).await,
+                "account" => ctl_account().await,
                 _ => {
-                    eprintln!("Usage: geph-tui --ctl start|stop|status");
+                    eprintln!("Usage: geph-tui --ctl <command> [args]");
+                    eprintln!();
+                    eprintln!("Commands:");
+                    eprintln!("    start, stop, status   basic daemon control");
+                    eprintln!("    switch [<cc|auto>]    hot-swap exit (existing TCP drains)");
+                    eprintln!("    exit                  show current exit constraint");
+                    eprintln!("    exits                 list available exits");
+                    eprintln!("    sessions              show active+draining sessions");
+                    eprintln!("    logs [N]              last N log lines (default 20)");
+                    eprintln!("    account               show account info");
                     std::process::exit(1);
                 }
             }
@@ -153,6 +179,16 @@ async fn run_app<B: Backend>(
             }
         } else {
             state.conn_info = ConnInfo::Disconnected;
+        }
+
+        if state.switch_in_progress {
+            if let Some(started) = state.switch_started_at {
+                if started.elapsed() >= Duration::from_secs(3) {
+                    state.switch_in_progress = false;
+                }
+            } else {
+                state.switch_in_progress = false;
+            }
         }
 
         let mut user_level = state.last_detected_level;
@@ -372,5 +408,193 @@ async fn ctl_status() -> anyhow::Result<()> {
         }
     }
 
+    Ok(())
+}
+
+async fn require_daemon() -> anyhow::Result<()> {
+    if !daemon_running().await {
+        anyhow::bail!("daemon not running; start it with `geph-tui --ctl start`");
+    }
+    Ok(())
+}
+
+fn fmt_constraint(c: &geph5_broker_protocol::ExitConstraint) -> String {
+    use geph5_broker_protocol::ExitConstraint;
+    match c {
+        ExitConstraint::Auto => "auto".to_string(),
+        ExitConstraint::Country(cc) => cc.alpha2().to_lowercase(),
+        ExitConstraint::CountryCity(cc, city) => {
+            format!("{}-{}", cc.alpha2().to_lowercase(), city)
+        }
+        ExitConstraint::Direct(s) => s.clone(),
+        ExitConstraint::Hostname(s) => s.clone(),
+    }
+}
+
+async fn ctl_switch(arg: Option<&str>, immediate: bool) -> anyhow::Result<()> {
+    require_daemon().await?;
+    let cc = arg.unwrap_or("auto");
+    let constraint = if cc.eq_ignore_ascii_case("auto") {
+        geph5_broker_protocol::ExitConstraint::Auto
+    } else {
+        geph5_broker_protocol::ExitConstraint::Country(
+            isocountry::CountryCode::for_alpha2_caseless(cc)
+                .map_err(|e| anyhow::anyhow!("bad country code {cc}: {e:?}"))?,
+        )
+    };
+    let human = fmt_constraint(&constraint);
+    ControlClient(DaemonRpcTransport)
+        .set_exit_constraint(constraint)
+        .await
+        .map_err(|e| anyhow::anyhow!("set_exit_constraint RPC transport error: {e:?}"))?
+        .map_err(|e| anyhow::anyhow!("set_exit_constraint rejected by daemon: {e}"))?;
+    if immediate {
+        let killed = ControlClient(DaemonRpcTransport)
+            .kill_stale_sessions()
+            .await
+            .map_err(|e| anyhow::anyhow!("kill_stale_sessions RPC transport error: {e:?}"))?
+            .map_err(|e| anyhow::anyhow!("kill_stale_sessions rejected by daemon: {e}"))?;
+        println!("Switched to {human}. Killed {killed} stale sessions. No drain period.");
+    } else {
+        println!("Switched to {human}. Existing TCP connections will drain.");
+    }
+    Ok(())
+}
+
+async fn ctl_exit_constraint() -> anyhow::Result<()> {
+    require_daemon().await?;
+    let constraint = ControlClient(DaemonRpcTransport)
+        .current_exit_constraint()
+        .await
+        .map_err(|e| anyhow::anyhow!("current_exit_constraint RPC error: {e:?}"))?;
+    println!("{}", fmt_constraint(&constraint));
+    Ok(())
+}
+
+async fn ctl_exits() -> anyhow::Result<()> {
+    require_daemon().await?;
+    let ns = ControlClient(DaemonRpcTransport)
+        .net_status()
+        .await
+        .map_err(|e| anyhow::anyhow!("net_status RPC transport error: {e:?}"))?
+        .map_err(|e| anyhow::anyhow!("net_status rejected by daemon: {e}"))?;
+    let mut rows: Vec<(geph5_broker_protocol::ExitDescriptor, geph5_broker_protocol::ExitMetadata)> =
+        ns.exits.into_values().map(|(_, desc, meta)| (desc, meta)).collect();
+    rows.sort_by(|a, b| {
+        (a.0.country.alpha2(), &a.0.city).cmp(&(b.0.country.alpha2(), &b.0.city))
+    });
+    let plus = geph5_broker_protocol::AccountLevel::Plus;
+    for (desc, meta) in rows {
+        let tier = if meta.allowed_levels.contains(&plus) {
+            "plus"
+        } else {
+            "free"
+        };
+        println!(
+            "{}  {:<18} {:>5.0}%  {}",
+            desc.country.alpha2().to_uppercase(),
+            desc.city,
+            desc.load * 100.0,
+            tier,
+        );
+    }
+    Ok(())
+}
+
+async fn ctl_sessions() -> anyhow::Result<()> {
+    require_daemon().await?;
+    let conn = ControlClient(DaemonRpcTransport)
+        .conn_info()
+        .await
+        .map_err(|e| anyhow::anyhow!("conn_info RPC error: {e:?}"))?;
+    match conn {
+        ConnInfo::Disconnected => println!("Disconnected"),
+        ConnInfo::Connecting => println!("Connecting"),
+        ConnInfo::Connected { sessions } => {
+            let mut groups: std::collections::BTreeMap<String, Vec<&geph5_misc_rpc::client_control::ConnectedInfo>> =
+                std::collections::BTreeMap::new();
+            for s in &sessions {
+                groups
+                    .entry(s.exit.country.alpha2().to_string())
+                    .or_default()
+                    .push(s);
+            }
+            for (cc, sess) in groups {
+                println!("Exit {cc} ({} sessions):", sess.len());
+                for s in sess {
+                    let bridge = s
+                        .bridge
+                        .map(|b| b.to_string())
+                        .unwrap_or_else(|| "none".to_string());
+                    println!("  protocol={} city={} bridge={}", s.protocol, s.exit.city, bridge);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn ctl_logs(arg: Option<&str>) -> anyhow::Result<()> {
+    require_daemon().await?;
+    let n = match arg {
+        Some(a) => match a.parse::<usize>() {
+            Ok(v) => v,
+            Err(_) => {
+                eprintln!("Usage: geph-tui --ctl logs [N]    (N must be a positive integer)");
+                std::process::exit(2);
+            }
+        },
+        None => 20,
+    };
+    let logs = ControlClient(DaemonRpcTransport)
+        .recent_logs()
+        .await
+        .map_err(|e| anyhow::anyhow!("recent_logs RPC error: {e:?}"))?;
+    let start = logs.len().saturating_sub(n);
+    for line in &logs[start..] {
+        println!("{}", line);
+    }
+    Ok(())
+}
+
+async fn ctl_account() -> anyhow::Result<()> {
+    require_daemon().await?;
+    let prefs = TuiPrefs::load();
+    if prefs.secret.is_empty() {
+        anyhow::bail!("no account configured");
+    }
+    let cred = geph5_broker_protocol::Credential::Secret(prefs.secret.clone());
+    let cred_val = serde_json::to_value(&cred).unwrap_or(serde_json::Value::Null);
+    let ui_val = ControlClient(DaemonRpcTransport)
+        .broker_rpc("get_user_info_by_cred".into(), vec![cred_val])
+        .await
+        .map_err(|e| anyhow::anyhow!("broker_rpc transport error: {e:?}"))?
+        .map_err(|e| anyhow::anyhow!("broker_rpc rejected by daemon: {e}"))?;
+    let ui = serde_json::from_value::<Option<geph5_broker_protocol::UserInfo>>(ui_val)
+        .map_err(|e| anyhow::anyhow!("failed to deserialize UserInfo: {e}"))?;
+    let ui = match ui {
+        Some(ui) => ui,
+        None => {
+            println!("user_id=<none>");
+            println!("plus=not plus");
+            return Ok(());
+        }
+    };
+    println!("user_id={}", ui.user_id);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    match ui.plus_expires_unix {
+        Some(exp) if exp > now => {
+            let days = (exp - now) as f64 / 86400.0;
+            println!("plus={} ({:.1} days remaining)", exp, days);
+        }
+        _ => println!("plus=not plus"),
+    }
+    if let Some(bw) = ui.bw_consumption {
+        println!("bw_used_mb={}", bw.mb_used);
+        println!("bw_limit_mb={}", bw.mb_limit);
+    }
     Ok(())
 }

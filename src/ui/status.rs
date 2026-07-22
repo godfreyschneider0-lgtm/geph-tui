@@ -20,7 +20,7 @@ pub fn draw(f: &mut ratatui::Frame, state: &mut AppState<'_>, area: Rect) {
         ConnInfo::Connected { .. } => Style::default().fg(Color::Green),
     };
 
-    let mut lines = vec![Line::from(vec![
+    let mut top_spans = vec![
         Span::raw("Daemon: "),
         Span::styled(
             if state.is_running {
@@ -41,16 +41,64 @@ pub fn draw(f: &mut ratatui::Frame, state: &mut AppState<'_>, area: Rect) {
             state.selected_country.as_deref().unwrap_or("Auto"),
             Style::default().fg(Color::Cyan),
         ),
-        Span::raw(" | Listen: "),
-        Span::styled(
-            if state.listen_all { "0.0.0.0" } else { "127.0.0.1" },
-            if state.listen_all {
-                Style::default().fg(Color::Magenta)
-            } else {
-                Style::default().fg(Color::Gray)
-            },
-        ),
-    ])];
+    ];
+
+    if state.switch_in_progress {
+        let target = state.last_switch_target.as_deref().unwrap_or("Auto");
+        top_spans.push(Span::styled(
+            format!(" (switching to {}...)", target),
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+
+    top_spans.push(Span::raw(" | Listen: "));
+    top_spans.push(Span::styled(
+        if state.listen_all { "0.0.0.0" } else { "127.0.0.1" },
+        if state.listen_all {
+            Style::default().fg(Color::Magenta)
+        } else {
+            Style::default().fg(Color::Gray)
+        },
+    ));
+
+    let mut lines = vec![Line::from(top_spans)];
+
+    if let ConnInfo::Connected { sessions } = &state.conn_info {
+        let mut by_country: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        for s in sessions {
+            *by_country.entry(s.exit.country.alpha2().to_string()).or_default() += 1;
+        }
+        if by_country.len() > 1 {
+            let mut entries: Vec<_> = by_country.into_iter().collect();
+            entries.sort_by(|a, b| b.1.cmp(&a.1));
+            let active = &entries[0];
+            let mut drain_parts = vec![
+                Span::styled(
+                    format!(
+                        "Active: {} ({} session{})",
+                        active.0,
+                        active.1,
+                        if active.1 > 1 { "s" } else { "" }
+                    ),
+                    Style::default().fg(Color::Green),
+                ),
+            ];
+            for (cc, count) in &entries[1..] {
+                drain_parts.push(Span::raw(" | "));
+                drain_parts.push(Span::styled(
+                    format!(
+                        "Draining: {} ({} session{})",
+                        cc,
+                        count,
+                        if *count > 1 { "s" } else { "" }
+                    ),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+            lines.push(Line::from(drain_parts));
+        }
+    }
 
     if let Some((version, path)) = &state.update_info {
         lines.push(Line::from(""));
